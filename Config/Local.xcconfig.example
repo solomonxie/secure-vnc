@@ -1,0 +1,4 @@
+// Copy to Local.xcconfig (gitignored) and fill in your own values.
+// developer.apple.com → Account → Membership details → Team ID.
+DEVELOPMENT_TEAM = REPLACE_WITH_YOUR_TEAM_ID
+APP_BUNDLE_ID = com.example.securevnc

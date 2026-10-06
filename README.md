@@ -1,0 +1,34 @@
+# Secure VNC — Mac Screen Sharing over SSH on iPhone
+
+Native Swift iPhone app: SSH key auth → tunnel → VNC, in one tap. The same as
+
+```sh
+ssh -N -L 127.0.0.1:5901:localhost:5900 user@mac   # + a VNC viewer on :5901
+```
+
+but without a local port: VNC runs inside an SSH `direct-tcpip` channel in-process.
+
+## Features
+- SSH keys generated on the phone — **Secure Enclave P-256** (non-exportable) or **Ed25519** (Keychain, this device only); optional Face ID gate.
+- Copy / share the public key, or a one-line `authorized_keys` install command.
+- Host keys trusted on first use (`SHA256:` fingerprint); a changed key blocks the connection.
+- VNC auth: macOS account (Apple ARD, type 30), VNC password, or none. Encodings: ZRLE, CopyRect, Raw, cursor, resize.
+- Trackpad or direct-touch control, pinch zoom, two-finger scroll/right click, keyboard with esc/tab/⌃⌥⌘/arrows bar, hardware keyboard.
+- No third-party services; dependencies: [swift-nio-ssh](https://github.com/apple/swift-nio-ssh), [BigInt](https://github.com/attaswift/BigInt).
+
+## Set up the Mac
+1. System Settings → General → Sharing → **Remote Login** and **Screen Sharing** on.
+2. In the app: Keys → + → Generate → **Copy install command** → run it on the Mac (or append the public key to `~/.ssh/authorized_keys`).
+3. Hosts → + → SSH host/user/key, VNC `localhost:5900`, Auth **macOS** + your Mac login.
+
+## Build
+Requires Xcode 16+, [XcodeGen](https://github.com/yonaskolb/XcodeGen).
+
+```sh
+cp Config/Local.xcconfig.example Config/Local.xcconfig   # your Team ID + bundle id
+make device      # build, install and launch on the connected iPhone
+make test        # library tests on macOS
+make test-live   # + throwaway sshd on 127.0.0.1:2222 tunnelling to this Mac's Screen Sharing
+```
+
+Design notes: `docs/design/secure-vnc/`.

@@ -1,0 +1,4 @@
+// Tracked placeholders. Real Team ID and bundle id come from the gitignored Local.xcconfig.
+DEVELOPMENT_TEAM =
+APP_BUNDLE_ID = com.example.securevnc
+#include? "Local.xcconfig"
