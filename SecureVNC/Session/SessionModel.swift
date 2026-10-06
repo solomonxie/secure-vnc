@@ -1,4 +1,5 @@
 import LocalAuthentication
+import Network
 import SecureVNCKit
 import SwiftUI
 
@@ -69,16 +70,22 @@ final class SessionModel: ObservableObject {
             guard let keyInfo = store.key(host.keyID) else {
                 throw Failure("This host's key was deleted. Edit the host and pick another.")
             }
-            var context: LAContext?
-            if keyInfo.requiresUserPresence {
-                let ctx = LAContext()
-                try await ctx.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: "Unlock \(keyInfo.name) to connect")
-                context = ctx
+            if Network.offLAN(host.sshHost) {
+                throw Failure("Couldn't reach \(host.sshHost)." + Network.hint(for: host.sshHost))
             }
-            let key = try store.keyStore.privateKey(for: keyInfo, context: context)
+            let keyStore = store.keyStore
             let expected = host.hostKeyFingerprint
             let tunnel = try await SSHTunnel.open(
-                SSHEndpoint(host: host.sshHost, port: host.sshPort, username: host.username), key: key,
+                SSHEndpoint(host: host.sshHost, port: host.sshPort, username: host.username),
+                key: {
+                    var context: LAContext?
+                    if keyInfo.requiresUserPresence {
+                        let ctx = LAContext()
+                        try await ctx.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: "Unlock \(keyInfo.name) to connect")
+                        context = ctx
+                    }
+                    return try keyStore.privateKey(for: keyInfo, context: context)
+                },
                 verifyHostKey: { [weak self] pub in
                     let got = SSHFingerprint.of(pub)
                     if let expected {
@@ -89,9 +96,15 @@ final class SessionModel: ObservableObject {
                         }
                         await store.trust(got, for: host.id)
                     }
-                    await self?.status("Authenticating as \(host.username)…", gen)
                 },
-                targetHost: host.vncHost, targetPort: host.vncPort)
+                targetHost: host.vncHost, targetPort: host.vncPort,
+                onStatus: { [weak self] status in
+                    let text = switch status {
+                    case .waitingForNetwork: "Waiting for local network access…"
+                    case .authenticating: "Authenticating as \(host.username)…"
+                    }
+                    Task { @MainActor in self?.status(text, gen) }
+                })
             guard gen == generation else { return tunnel.close() }
             self.tunnel = tunnel
 
@@ -137,6 +150,8 @@ final class SessionModel: ObservableObject {
             "Key not accepted by \(host.username)@\(host.sshHost). Add its public key to ~/.ssh/authorized_keys there."
         case let e as LAError where e.code == .userCancel || e.code == .appCancel || e.code == .systemCancel:
             "Unlock cancelled."
+        case SSHTunnelError.unreachable:
+            error.localizedDescription + Network.hint(for: host.sshHost)
         case TransportError.closed:
             "Disconnected."
         case RFBError.authFailed:
@@ -150,4 +165,35 @@ final class SessionModel: ObservableObject {
 struct Failure: LocalizedError {
     let errorDescription: String?
     init(_ text: String) { errorDescription = text }
+}
+
+/// Explains the usual reason a LAN address fails from a phone.
+enum Network {
+    private static let monitor: NWPathMonitor = {
+        let m = NWPathMonitor()
+        m.start(queue: DispatchQueue(label: "network-path"))
+        return m
+    }()
+
+    static func start() { _ = monitor }
+
+    static func isLAN(_ host: String) -> Bool {
+        host.hasSuffix(".local") || host.hasPrefix("192.168.") || host.hasPrefix("10.")
+            || host.range(of: #"^172\.(1[6-9]|2\d|3[01])\."#, options: .regularExpression) != nil
+    }
+
+    /// True when a LAN host can't possibly be reached: the path is known and has neither Wi-Fi nor Ethernet.
+    static func offLAN(_ host: String) -> Bool {
+        let path = monitor.currentPath
+        return isLAN(host) && path.status != .requiresConnection && !path.availableInterfaces.isEmpty
+            && !path.usesInterfaceType(.wifi) && !path.usesInterfaceType(.wiredEthernet)
+    }
+
+    static func hint(for host: String) -> String {
+        guard isLAN(host) else { return "" }
+        if offLAN(host) {
+            return "\n\nThis iPhone isn't on Wi-Fi. \(host) is only reachable from your local network."
+        }
+        return "\n\nIf this is the first connection, check Settings → Privacy & Security → Local Network → Secure VNC is on."
+    }
 }

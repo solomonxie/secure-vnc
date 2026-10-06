@@ -16,6 +16,7 @@ final class AppStore: ObservableObject {
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         hosts = load("hosts.json") ?? []
         keys = load("keys.json") ?? []
+        Network.start()
     }
 
     // MARK: Hosts
