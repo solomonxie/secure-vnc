@@ -36,6 +36,12 @@ public struct SSHEndpoint: Sendable {
 
 /// Decides whether to trust a server's host key; throw to refuse with a specific reason.
 public typealias HostKeyVerifier = @Sendable (NIOSSHPublicKey) async throws -> Void
+public typealias KeyProvider = @Sendable () async throws -> NIOSSHPrivateKey
+
+public enum SSHTunnelStatus: Sendable {
+    case waitingForNetwork
+    case authenticating
+}
 
 /// `ssh -N -L` without the local listener: one direct-tcpip channel exposed as a ByteTransport.
 public final class SSHTunnel: ByteTransport, @unchecked Sendable {
@@ -51,13 +57,15 @@ public final class SSHTunnel: ByteTransport, @unchecked Sendable {
         self.reader = reader
     }
 
+    /// `key` is loaded only once the server is reachable and trusted and asks for auth,
+    /// so a Face ID prompt never appears for a connection that was going to fail anyway.
     public static func open(
-        _ endpoint: SSHEndpoint, key: NIOSSHPrivateKey, verifyHostKey: @escaping HostKeyVerifier,
-        targetHost: String, targetPort: Int
+        _ endpoint: SSHEndpoint, key: @escaping KeyProvider, verifyHostKey: @escaping HostKeyVerifier,
+        targetHost: String, targetPort: Int, onStatus: @escaping @Sendable (SSHTunnelStatus) -> Void = { _ in }
     ) async throws -> SSHTunnel {
         let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
         let state = FailureState()
-        let userAuth = KeyAuthDelegate(username: endpoint.username, key: key, state: state)
+        let userAuth = KeyAuthDelegate(username: endpoint.username, key: key, state: state, onStatus: onStatus)
         let serverAuth = HostKeyDelegate(verify: verifyHostKey, state: state)
 
         let bootstrap = ClientBootstrap(group: group)
@@ -75,10 +83,10 @@ public final class SSHTunnel: ByteTransport, @unchecked Sendable {
 
         let connection: Channel
         do {
-            connection = try await bootstrap.connect(host: endpoint.host, port: endpoint.port).get()
+            connection = try await connect(bootstrap, endpoint, onStatus)
         } catch {
             try? await group.shutdownGracefully()
-            throw SSHTunnelError.unreachable(error.localizedDescription)
+            throw SSHTunnelError.unreachable(describe(error))
         }
 
         connection.eventLoop.execute { userAuth.connection = connection }
@@ -109,6 +117,41 @@ public final class SSHTunnel: ByteTransport, @unchecked Sendable {
         }
     }
 
+    /// Retries fast failures for a while: on first use iOS fails LAN connects while its
+    /// Local Network permission alert is still on screen.
+    private static func connect(_ bootstrap: ClientBootstrap, _ endpoint: SSHEndpoint,
+                                _ onStatus: @Sendable (SSHTunnelStatus) -> Void) async throws -> Channel {
+        let deadline = Date().addingTimeInterval(20)
+        while true {
+            let started = Date()
+            do {
+                return try await bootstrap.connect(host: endpoint.host, port: endpoint.port).get()
+            } catch {
+                let quick = Date().timeIntervalSince(started) < 3
+                guard quick, Date() < deadline, !errnos(error).contains(ECONNREFUSED) else { throw error }
+                onStatus(.waitingForNetwork)
+                try await Task.sleep(for: .seconds(1))
+            }
+        }
+    }
+
+    private static func errnos(_ error: Error) -> [CInt] {
+        if let e = error as? IOError { return [e.errnoCode] }
+        if let e = error as? NIOConnectionError { return e.connectionErrors.compactMap { ($0.error as? IOError)?.errnoCode } }
+        return []
+    }
+
+    static func describe(_ error: Error) -> String {
+        if let e = error as? NIOConnectionError {
+            if let dns = e.dnsAError ?? e.dnsAAAAError { return "can't resolve \(e.host) (\(dns))" }
+            if let code = errnos(error).first { return String(cString: strerror(code)) }
+            if e.connectionErrors.isEmpty { return "no address found for \(e.host)" }
+        }
+        if let e = error as? IOError { return String(cString: strerror(e.errnoCode)) }
+        if error is ChannelError { return "timed out" }
+        return error.localizedDescription
+    }
+
     public func read(_ count: Int) async throws -> [UInt8] { try await reader.read(count) }
 
     public func send(_ bytes: [UInt8]) {
@@ -132,17 +175,20 @@ final class FailureState: @unchecked Sendable {
 
 final class KeyAuthDelegate: NIOSSHClientUserAuthenticationDelegate, @unchecked Sendable {
     let username: String
-    let key: NIOSSHPrivateKey
+    let key: KeyProvider
     let state: FailureState
+    let onStatus: @Sendable (SSHTunnelStatus) -> Void
     private(set) var exhausted = false
     private var offered = false
     /// Closed on rejection; NIO SSH would otherwise wait out the server's login grace time.
     var connection: Channel?
 
-    init(username: String, key: NIOSSHPrivateKey, state: FailureState) {
+    init(username: String, key: @escaping KeyProvider, state: FailureState,
+         onStatus: @escaping @Sendable (SSHTunnelStatus) -> Void) {
         self.username = username
         self.key = key
         self.state = state
+        self.onStatus = onStatus
     }
 
     func nextAuthenticationType(
@@ -157,7 +203,18 @@ final class KeyAuthDelegate: NIOSSHClientUserAuthenticationDelegate, @unchecked 
             return
         }
         offered = true
-        nextChallengePromise.succeed(.init(username: username, serviceName: "", offer: .privateKey(.init(privateKey: key))))
+        onStatus(.authenticating)
+        let (username, key, state, connection) = (username, key, state, connection)
+        Task {
+            do {
+                let privateKey = try await key()
+                nextChallengePromise.succeed(.init(username: username, serviceName: "", offer: .privateKey(.init(privateKey: privateKey))))
+            } catch {
+                state.record(error)
+                nextChallengePromise.succeed(nil)
+                connection?.close(promise: nil)
+            }
+        }
     }
 }
 

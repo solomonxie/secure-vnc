@@ -53,7 +53,7 @@ final class TunnelIntegrationTests: XCTestCase {
         let expected = try hostFingerprint()
 
         let tunnel = try await SSHTunnel.open(
-            SSHEndpoint(host: "127.0.0.1", port: 2222, username: NSUserName()), key: try store.privateKey(for: info),
+            SSHEndpoint(host: "127.0.0.1", port: 2222, username: NSUserName()), key: { try store.privateKey(for: info) },
             verifyHostKey: { key in
                 let got = SSHFingerprint.of(key)
                 guard got == expected else { throw SSHTunnelError.hostKeyChanged(expected: expected, got: got) }
@@ -77,7 +77,7 @@ final class TunnelIntegrationTests: XCTestCase {
         try startSSHD(authorizing: allowed.publicKey)
         do {
             _ = try await SSHTunnel.open(
-                SSHEndpoint(host: "127.0.0.1", port: 2222, username: NSUserName()), key: try store.privateKey(for: other),
+                SSHEndpoint(host: "127.0.0.1", port: 2222, username: NSUserName()), key: { try store.privateKey(for: other) },
                 verifyHostKey: { _ in }, targetHost: "localhost", targetPort: 5900)
             XCTFail("should not connect")
         } catch SSHTunnelError.keyRejected {} catch { XCTFail("\(error)") }
@@ -89,7 +89,7 @@ final class TunnelIntegrationTests: XCTestCase {
         try startSSHD(authorizing: info.publicKey)
         do {
             _ = try await SSHTunnel.open(
-                SSHEndpoint(host: "127.0.0.1", port: 2222, username: NSUserName()), key: try store.privateKey(for: info),
+                SSHEndpoint(host: "127.0.0.1", port: 2222, username: NSUserName()), key: { try store.privateKey(for: info) },
                 verifyHostKey: { key in throw SSHTunnelError.hostKeyChanged(expected: "SHA256:old", got: SSHFingerprint.of(key)) },
                 targetHost: "localhost", targetPort: 5900)
             XCTFail("should not connect")
@@ -102,7 +102,7 @@ final class TunnelIntegrationTests: XCTestCase {
         try startSSHD(authorizing: info.publicKey)
         do {
             _ = try await SSHTunnel.open(
-                SSHEndpoint(host: "127.0.0.1", port: 2222, username: NSUserName()), key: try store.privateKey(for: info),
+                SSHEndpoint(host: "127.0.0.1", port: 2222, username: NSUserName()), key: { try store.privateKey(for: info) },
                 verifyHostKey: { _ in }, targetHost: "localhost", targetPort: 1)
             XCTFail("should not connect")
         } catch SSHTunnelError.forwardFailed {} catch { XCTFail("\(error)") }
@@ -114,5 +114,15 @@ final class TunnelIntegrationTests: XCTestCase {
         p.arguments = args
         try p.run()
         p.waitUntilExit()
+    }
+}
+
+final class TunnelErrorTests: XCTestCase {
+    func testRefusedPortIsDescribed() async {
+        do {
+            _ = try await SSHTunnel.open(SSHEndpoint(host: "127.0.0.1", port: 1, username: "x"), key: { fatalError() },
+                                         verifyHostKey: { _ in }, targetHost: "localhost", targetPort: 5900)
+            XCTFail()
+        } catch SSHTunnelError.unreachable(let why) { XCTAssertEqual(why, "Connection refused") } catch { XCTFail("\(error)") }
     }
 }
