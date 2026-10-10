@@ -24,6 +24,10 @@ struct HostEditorView: View {
             Form {
                 Section("Name") {
                     field("Studio Mac", text: $host.name)
+                    Picker("Type", selection: $host.type) {
+                        ForEach(ConnectionType.allCases, id: \.self) { Label($0.label, systemImage: $0.symbol) }
+                    }
+                    .pickerStyle(.segmented)
                 }
                 Section("SSH") {
                     field("192.168.1.20 or mac.local", text: $host.sshHost)
@@ -32,28 +36,7 @@ struct HostEditorView: View {
                     keyRow
                     if keyPickerOpen { keyOptions }
                 }
-                Section {
-                    field("localhost", text: $host.vncHost)
-                    field("5900", text: $vncPort).keyboardType(.numberPad)
-                    Picker("Auth", selection: $host.auth) {
-                        ForEach(VNCAuthKind.allCases, id: \.self) { Text($0.label) }
-                    }
-                    .pickerStyle(.segmented)
-                    if host.auth == .macOS {
-                        field(host.username.isEmpty ? "macOS user" : host.username, text: $host.macUser)
-                    }
-                    if host.auth != .none { secretField }
-                } header: {
-                    HStack(spacing: 4) {
-                        Text("VNC")
-                        Button { showVNCInfo = true } label: { Image(systemName: "info.circle") }
-                            .popover(isPresented: $showVNCInfo) {
-                                Text("Address as seen from the SSH server, like `ssh -L 5901:localhost:5900`. VNC traffic never leaves the SSH connection.\n\nmacOS Screen Sharing: choose macOS and enter that Mac's account login.")
-                                    .font(.callout).padding().frame(width: 300)
-                                    .presentationCompactAdaptation(.popover)
-                            }
-                    }
-                }
+                if host.type == .vnc { vncSection }
             }
             .navigationTitle(isNew ? "New Host" : "Edit Host")
             .navigationBarTitleDisplayMode(.inline)
@@ -71,6 +54,31 @@ struct HostEditorView: View {
                 vncPort = String(host.vncPort)
                 if !isNew { password = store.password(for: host.id) }
                 if host.keyID == nil { host.keyID = store.keys.first?.id }
+            }
+        }
+    }
+
+    private var vncSection: some View {
+        Section {
+            field("localhost", text: $host.vncHost)
+            field("5900", text: $vncPort).keyboardType(.numberPad)
+            Picker("Auth", selection: $host.auth) {
+                ForEach(VNCAuthKind.allCases, id: \.self) { Text($0.label) }
+            }
+            .pickerStyle(.segmented)
+            if host.auth == .macOS {
+                field(host.username.isEmpty ? "macOS user" : host.username, text: $host.macUser)
+            }
+            if host.auth != .none { secretField }
+        } header: {
+            HStack(spacing: 4) {
+                Text("VNC")
+                Button { showVNCInfo = true } label: { Image(systemName: "info.circle") }
+                    .popover(isPresented: $showVNCInfo) {
+                        Text("Address as seen from the SSH server, like `ssh -L 5901:localhost:5900`. VNC traffic never leaves the SSH connection.\n\nmacOS Screen Sharing: choose macOS and enter that Mac's account login.")
+                            .font(.callout).padding().frame(width: 300)
+                            .presentationCompactAdaptation(.popover)
+                    }
             }
         }
     }
@@ -139,7 +147,7 @@ struct HostEditorView: View {
         if let old = store.host(h.id), old.sshHost != h.sshHost || old.sshPort != h.sshPort {
             h.hostKeyFingerprint = nil
         }
-        store.save(h, password: h.auth == .none ? "" : password)
+        store.save(h, password: h.type == .terminal || h.auth == .none ? "" : password)
         dismiss()
     }
 }

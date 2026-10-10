@@ -20,15 +20,21 @@ struct SessionView: View {
                 ScreenView(client: client, trackpad: trackpad, keyboard: $keyboard)
                     .ignoresSafeArea(.container)
                 topBar
+            } else if let terminal = model.terminal {
+                TerminalView(terminal: terminal, title: model.host.name, phase: model.phase,
+                             reconnect: { model.connect(store: store) }, close: { dismiss() })
             } else {
                 statusView
             }
         }
-        .statusBarHidden(model.phase == .live)
-        .persistentSystemOverlays(model.phase == .live ? .hidden : .automatic)
+        .statusBarHidden(isScreenLive)
+        .persistentSystemOverlays(isScreenLive ? .hidden : .automatic)
         .onAppear { model.connect(store: store) }
         .onDisappear { model.disconnect() }
-        .onChange(of: scenePhase) { _, p in if p == .background { model.dropToBackground() } }
+        .onChange(of: scenePhase) { _, p in
+            if p == .background { model.enterBackground() }
+            if p == .active { model.enterForeground() }
+        }
         .alert(item: $model.trustPrompt) { prompt in
             Alert(title: Text("Trust \(model.host.name)?"),
                   message: Text("First connection to \(model.host.sshHost). Check this matches the server:\n\n\(prompt.algorithm)\n\(prompt.fingerprint)"),
@@ -36,11 +42,13 @@ struct SessionView: View {
                   secondaryButton: .cancel { model.answerTrust(false) })
         }
         .task(id: barVisible) {
-            guard barVisible, model.phase == .live else { return }
+            guard barVisible, isScreenLive else { return }
             try? await Task.sleep(for: .seconds(3))
             withAnimation { barVisible = false }
         }
     }
+
+    private var isScreenLive: Bool { model.phase == .live && model.client != nil }
 
     @ViewBuilder private var topBar: some View {
         if barVisible {
