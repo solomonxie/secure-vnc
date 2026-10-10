@@ -127,3 +127,26 @@ final class RFBTests: XCTestCase {
         XCTAssertEqual(c.framebuffer.pixel(x: 65, y: 1), 0x0000FF)
     }
 }
+
+final class ClaudeTranscriptTests: XCTestCase {
+    func testRendersPromptsToolsAndResults() {
+        let user = #"{"type":"user","message":{"role":"user","content":"fix the build"},"isMeta":false}"#
+        let slash = #"{"type":"user","message":{"role":"user","content":"<command-name>/clear</command-name>\n<command-message>clear</command-message>\n<command-args></command-args>"}}"#
+        let tool = #"{"type":"assistant","message":{"role":"assistant","content":[{"type":"thinking","thinking":"hmm"},{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"ls\n-la","description":"List files"}}]}}"#
+        let result = #"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"a\nb"}]}}"#
+        let text = #"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Done.\n"}]}}"#
+        XCTAssertEqual(ClaudeTranscript.render(user), "\n❯ fix the build\n")
+        XCTAssertEqual(ClaudeTranscript.render(slash), "\n❯ /clear\n")
+        XCTAssertEqual(ClaudeTranscript.render(tool), "⚙ Bash  List files\n")
+        XCTAssertEqual(ClaudeTranscript.render(result), "  ↳ a\n    b\n")
+        XCTAssertEqual(ClaudeTranscript.render(text), "\nDone.\n")
+    }
+
+    func testSkipsNoise() {
+        XCTAssertNil(ClaudeTranscript.render(#"{"type":"user","isMeta":true,"message":{"content":"<local-command-caveat>x</local-command-caveat>"}}"#))
+        XCTAssertNil(ClaudeTranscript.render(#"{"type":"user","message":{"content":"<task-notification>done</task-notification>"}}"#))
+        XCTAssertNil(ClaudeTranscript.render(#"{"type":"user","isSidechain":true,"message":{"content":"sub"}}"#))
+        XCTAssertNil(ClaudeTranscript.render(#"{"type":"ai-title","aiTitle":"x"}"#))
+        XCTAssertNil(ClaudeTranscript.render("not json"))
+    }
+}
