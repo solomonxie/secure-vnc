@@ -386,14 +386,14 @@ struct TerminalView: View {
             .font(.system(.body, design: .monospaced))
             .textInputAutocapitalization(.never)
             .autocorrectionDisabled()
-            .submitLabel(.send)
+            .submitLabel(.done)
             .focused($focused)
             .onSubmit(submit)
             Button { step(-1) } label: { Image(systemName: "chevron.up") }
                 .disabled(terminal.history.isEmpty).accessibilityLabel("Previous command")
             Button { step(1) } label: { Image(systemName: "chevron.down") }
                 .disabled(recall == nil).accessibilityLabel("Next command")
-            Button(action: submit) { Image(systemName: "return") }.accessibilityLabel("Send")
+            Button("Send", action: submit).buttonStyle(.borderedProminent).controlSize(.small)
         }
         .foregroundStyle(.white)
         .padding(.horizontal, 14).padding(.vertical, 10)
