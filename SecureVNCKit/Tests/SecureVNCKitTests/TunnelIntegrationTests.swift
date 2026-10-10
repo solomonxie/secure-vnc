@@ -85,6 +85,71 @@ final class TunnelIntegrationTests: XCTestCase {
         }
     }
 
+    func testRemoteFilesFollowShellDirectory() async throws {
+        let store = SSHKeyStore(secrets: MemorySecretStore())
+        let info = try store.generate(name: "live", kind: .ed25519, requireUserPresence: false)
+        try startSSHD(authorizing: info.publicKey)
+        let shell = try await SSHTunnel.openShell(
+            SSHEndpoint(host: "127.0.0.1", port: 2222, username: NSUserName()), key: { try store.privateKey(for: info) },
+            verifyHostKey: { _ in })
+        defer { shell.close() }
+        let work = dir.appendingPathComponent("work it").resolvingSymlinksInPath().path
+        try FileManager.default.createDirectory(atPath: work, withIntermediateDirectories: true)
+        shell.send(Array("cd \(RemoteFiles.quote(work)); echo ready-$((1+1))\r".utf8))
+        var out = ""
+        while !out.contains("ready-2") {
+            out += String(decoding: try await shell.readAvailable(), as: UTF8.self)
+        }
+
+        let files = RemoteFiles(tunnel: shell)
+        let cwd = try await files.shellDirectory()
+        XCTAssertTrue(cwd.hasSuffix("/work it"), cwd)
+
+        try await files.writeText(work + "/a's.txt", "héllo\n")
+        try await files.makeDirectory(work + "/sub")
+        try await files.paste([work + "/a's.txt"], into: work, move: false)
+        try await files.paste([work + "/a's.txt"], into: work + "/sub", move: true)
+        try await files.rename(work + "/a's copy.txt", to: "b.txt")
+        let names = try await files.list(work).map(\.name)
+        XCTAssertEqual(names, ["sub", "b.txt"])
+        let readBack = try await files.readText(work + "/sub/a's.txt")
+        XCTAssertEqual(readBack, "héllo\n")
+        try await files.remove([work + "/sub"])
+        let after = try await files.list(work).map(\.name)
+        XCTAssertEqual(after, ["b.txt"])
+        do { _ = try await files.list(work + "/missing"); XCTFail("should fail") } catch RemoteFileError.failed {}
+    }
+
+    func testTmuxPaneMirror() async throws {
+        let store = SSHKeyStore(secrets: MemorySecretStore())
+        let info = try store.generate(name: "live", kind: .ed25519, requireUserPresence: false)
+        try startSSHD(authorizing: info.publicKey)
+        let shell = try await SSHTunnel.openShell(
+            SSHEndpoint(host: "127.0.0.1", port: 2222, username: NSUserName()), key: { try store.privateKey(for: info) },
+            verifyHostKey: { _ in })
+        defer { shell.close() }
+        let socket = "securevnc-test-\(UUID().uuidString.prefix(8))"
+        let panes = RemotePanes(tunnel: shell, socket: socket)
+        let none = try await panes.list()
+        XCTAssertEqual(none, [])
+        _ = try await shell.exec(RemoteFiles.command(
+            #"PATH="$PATH:/opt/homebrew/bin:/usr/local/bin"; tmux -L "$1" new-session -d -s t -x 80 -y 20 /bin/sh </dev/null >/dev/null 2>&1"#, [socket]))
+
+        let list = try await panes.list()
+        let pane = try XCTUnwrap(list.first)
+        XCTAssertTrue(pane.target.hasPrefix("t:"), pane.target)
+        try await panes.sendLine(pane.id, "echo pane-$((40+2))")
+        var text = ""
+        for _ in 0..<20 where !text.contains("pane-42") {
+            try await Task.sleep(for: .milliseconds(150))
+            text = try await panes.capture(pane.id)
+        }
+        XCTAssertTrue(text.contains("pane-42"), text)
+        let path = try await panes.currentPath(pane.id)
+        XCTAssertFalse(path.isEmpty)
+        try await panes.sendKey(pane.id, "C-d")
+    }
+
     func testUnknownKeyIsRejected() async throws {
         let store = SSHKeyStore(secrets: MemorySecretStore())
         let allowed = try store.generate(name: "a", kind: .ed25519, requireUserPresence: false)

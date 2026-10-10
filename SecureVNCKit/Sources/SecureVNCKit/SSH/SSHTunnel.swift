@@ -191,6 +191,22 @@ public final class SSHTunnel: ByteTransport, @unchecked Sendable {
         child.triggerUserOutboundEvent(event, promise: nil)
     }
 
+    /// Runs a command on its own channel of this connection, sending `input` then EOF.
+    public func exec(_ command: String, input: [UInt8] = []) async throws -> SSHExecResult {
+        let connection = connection
+        let result = connection.eventLoop.makePromise(of: SSHExecResult.self)
+        _ = try await connection.pipeline.handler(type: NIOSSHHandler.self).flatMap { ssh in
+            let promise = connection.eventLoop.makePromise(of: Channel.self)
+            ssh.createChannel(promise, channelType: .session) { child, _ in
+                child.setOption(ChannelOptions.allowRemoteHalfClosure, value: true).flatMapThrowing {
+                    try child.pipeline.syncOperations.addHandler(ExecHandler(command: command, input: input, result: result))
+                }
+            }
+            return promise.futureResult
+        }.get()
+        return try await result.futureResult.get()
+    }
+
     public func close() {
         connection.close(promise: nil)
         group.shutdownGracefully { _ in }
@@ -307,5 +323,81 @@ final class TunnelDataHandler: ChannelInboundHandler {
     func errorCaught(context: ChannelHandlerContext, error: Error) {
         continuation.finish(throwing: error)
         context.close(promise: nil)
+    }
+}
+
+public struct SSHExecResult: Sendable {
+    public var status: Int
+    public var output: [UInt8]
+    public var error: [UInt8]
+
+    public var text: String { String(decoding: output, as: UTF8.self) }
+    public var errorText: String { String(decoding: error, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines) }
+}
+
+final class ExecHandler: ChannelDuplexHandler {
+    typealias InboundIn = SSHChannelData
+    typealias OutboundIn = SSHChannelData
+    typealias OutboundOut = SSHChannelData
+    let command: String
+    let input: [UInt8]
+    let result: EventLoopPromise<SSHExecResult>
+    private var collected = SSHExecResult(status: -1, output: [], error: [])
+    private var started = false
+    private var done = false
+
+    init(command: String, input: [UInt8], result: EventLoopPromise<SSHExecResult>) {
+        self.command = command
+        self.input = input
+        self.result = result
+    }
+
+    func handlerAdded(context: ChannelHandlerContext) { if context.channel.isActive { start(context) } }
+
+    func channelActive(context: ChannelHandlerContext) {
+        start(context)
+        context.fireChannelActive()
+    }
+
+    private func start(_ context: ChannelHandlerContext) {
+        guard !started else { return }
+        started = true
+        context.triggerUserOutboundEvent(SSHChannelRequestEvent.ExecRequest(command: command, wantReply: false), promise: nil)
+        if !input.isEmpty {
+            var buf = context.channel.allocator.buffer(capacity: input.count)
+            buf.writeBytes(input)
+            context.write(wrapOutboundOut(SSHChannelData(type: .channel, data: .byteBuffer(buf))), promise: nil)
+        }
+        context.flush()
+        context.close(mode: .output, promise: nil)
+    }
+
+    func channelRead(context: ChannelHandlerContext, data: NIOAny) {
+        let message = unwrapInboundIn(data)
+        guard case .byteBuffer(var buf) = message.data, let bytes = buf.readBytes(length: buf.readableBytes) else { return }
+        if case .channel = message.type { collected.output += bytes } else { collected.error += bytes }
+    }
+
+    func userInboundEventTriggered(context: ChannelHandlerContext, event: Any) {
+        if let exit = event as? SSHChannelRequestEvent.ExitStatus { collected.status = exit.exitStatus }
+        context.fireUserInboundEventTriggered(event)
+    }
+
+    func channelInactive(context: ChannelHandlerContext) {
+        finish()
+        context.fireChannelInactive()
+    }
+
+    func errorCaught(context: ChannelHandlerContext, error: Error) {
+        if !done { done = true; result.fail(error) }
+        context.close(promise: nil)
+    }
+
+    func handlerRemoved(context: ChannelHandlerContext) { finish() }
+
+    private func finish() {
+        guard !done else { return }
+        done = true
+        result.succeed(collected)
     }
 }
