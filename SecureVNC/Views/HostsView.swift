@@ -54,7 +54,11 @@ struct HostsView: View {
 
     private func row(_ host: Host) -> some View {
         HStack(spacing: 12) {
-            Image(systemName: "desktopcomputer").font(.title2).foregroundStyle(.tint)
+            Image(systemName: host.type.symbol)
+                .font(.title3.weight(.medium))
+                .foregroundStyle(host.type == .vnc ? Color.white : Color.green)
+                .frame(width: 40, height: 40)
+                .background(host.type == .vnc ? Color.accentColor : Color(white: 0.12), in: RoundedRectangle(cornerRadius: 9))
             VStack(alignment: .leading, spacing: 2) {
                 Text(host.name).font(.headline).foregroundStyle(.primary)
                 Text(host.subtitle).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)

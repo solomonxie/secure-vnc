@@ -20,6 +20,7 @@ final class SessionModel: ObservableObject {
     @Published var phase = Phase.connecting("")
     @Published var trustPrompt: TrustPrompt?
     @Published private(set) var client: RFBClient?
+    @Published private(set) var terminal: Terminal?
 
     let host: Host
     private var store: AppStore?
@@ -27,6 +28,10 @@ final class SessionModel: ObservableObject {
     private var task: Task<Void, Never>?
     private var trustReply: CheckedContinuation<Bool, Never>?
     private var generation = 0
+    private var inBackground = false
+    private var backgroundTask = UIBackgroundTaskIdentifier.invalid
+    /// A drop noticed in the background or just after returning reconnects silently.
+    private var quietReconnectUntil: Date?
 
     init(host: Host) { self.host = host }
 
@@ -47,14 +52,34 @@ final class SessionModel: ObservableObject {
         tunnel?.close()
         tunnel = nil
         client = nil
+        terminal?.detach()
         answerTrust(false)
         UIApplication.shared.isIdleTimerDisabled = false
     }
 
-    func dropToBackground() {
-        guard phase == .live || { if case .connecting = phase { return true } else { return false } }() else { return }
-        disconnect()
-        phase = .failed("Disconnected while in the background.", keyRejected: false)
+    /// iOS gives a few seconds to finish work before suspending; a dead link is mended on return.
+    func enterBackground() {
+        inBackground = true
+        guard backgroundTask == .invalid else { return }
+        backgroundTask = UIApplication.shared.beginBackgroundTask { [weak self] in self?.endBackgroundTask() }
+    }
+
+    func enterForeground() {
+        guard inBackground else { return }
+        inBackground = false
+        endBackgroundTask()
+        if case .failed = phase, quietReconnectUntil != nil, let store {
+            quietReconnectUntil = nil
+            connect(store: store)
+        } else {
+            quietReconnectUntil = Date().addingTimeInterval(5)
+        }
+    }
+
+    private func endBackgroundTask() {
+        guard backgroundTask != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(backgroundTask)
+        backgroundTask = .invalid
     }
 
     func answerTrust(_ trusted: Bool) {
@@ -75,36 +100,49 @@ final class SessionModel: ObservableObject {
             }
             let keyStore = store.keyStore
             let expected = host.hostKeyFingerprint
+            let endpoint = SSHEndpoint(host: host.sshHost, port: host.sshPort, username: host.username)
+            let key: KeyProvider = {
+                var context: LAContext?
+                if keyInfo.requiresUserPresence {
+                    let ctx = LAContext()
+                    try await ctx.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: "Unlock \(keyInfo.name) to connect")
+                    context = ctx
+                }
+                return try keyStore.privateKey(for: keyInfo, context: context)
+            }
+            let verify: HostKeyVerifier = { [weak self] pub in
+                let got = SSHFingerprint.of(pub)
+                if let expected {
+                    guard expected == got else { throw SSHTunnelError.hostKeyChanged(expected: expected, got: got) }
+                } else {
+                    guard let self, await self.askTrust(SSHFingerprint.algorithm(pub), got) else {
+                        throw SSHTunnelError.hostKeyRejected
+                    }
+                    await store.trust(got, for: host.id)
+                }
+            }
+            let onStatus: @Sendable (SSHTunnelStatus) -> Void = { [weak self] status in
+                let text = switch status {
+                case .waitingForNetwork: "Waiting for local network access…"
+                case .authenticating: "Authenticating as \(host.username)…"
+                }
+                Task { @MainActor in self?.status(text, gen) }
+            }
+
+            if host.type == .terminal {
+                let tunnel = try await SSHTunnel.openShell(endpoint, key: key, verifyHostKey: verify, onStatus: onStatus)
+                guard gen == generation else { return tunnel.close() }
+                self.tunnel = tunnel
+                let terminal = self.terminal ?? Terminal()
+                terminal.attach(tunnel)
+                self.terminal = terminal
+                phase = .live
+                return try await terminal.run()
+            }
+
             let tunnel = try await SSHTunnel.open(
-                SSHEndpoint(host: host.sshHost, port: host.sshPort, username: host.username),
-                key: {
-                    var context: LAContext?
-                    if keyInfo.requiresUserPresence {
-                        let ctx = LAContext()
-                        try await ctx.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: "Unlock \(keyInfo.name) to connect")
-                        context = ctx
-                    }
-                    return try keyStore.privateKey(for: keyInfo, context: context)
-                },
-                verifyHostKey: { [weak self] pub in
-                    let got = SSHFingerprint.of(pub)
-                    if let expected {
-                        guard expected == got else { throw SSHTunnelError.hostKeyChanged(expected: expected, got: got) }
-                    } else {
-                        guard let self, await self.askTrust(SSHFingerprint.algorithm(pub), got) else {
-                            throw SSHTunnelError.hostKeyRejected
-                        }
-                        await store.trust(got, for: host.id)
-                    }
-                },
-                targetHost: host.vncHost, targetPort: host.vncPort,
-                onStatus: { [weak self] status in
-                    let text = switch status {
-                    case .waitingForNetwork: "Waiting for local network access…"
-                    case .authenticating: "Authenticating as \(host.username)…"
-                    }
-                    Task { @MainActor in self?.status(text, gen) }
-                })
+                endpoint, key: key, verifyHostKey: verify,
+                targetHost: host.vncHost, targetPort: host.vncPort, onStatus: onStatus)
             guard gen == generation else { return tunnel.close() }
             self.tunnel = tunnel
 
@@ -118,8 +156,18 @@ final class SessionModel: ObservableObject {
             try await client.run()
         } catch {
             guard gen == generation, !Task.isCancelled else { return }
+            let wasLive = phase == .live
             disconnect()
             phase = .failed(message(error), keyRejected: { if case SSHTunnelError.keyRejected = error { true } else { false } }())
+            guard wasLive else { return }
+            if inBackground {
+                quietReconnectUntil = .distantFuture
+            } else if let until = quietReconnectUntil, Date() < until {
+                quietReconnectUntil = nil
+                connect(store: store)
+            } else {
+                terminal?.note(message(error))
+            }
         }
     }
 

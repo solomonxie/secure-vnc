@@ -12,9 +12,22 @@ enum VNCAuthKind: String, Codable, CaseIterable {
     }
 }
 
+enum ConnectionType: String, Codable, CaseIterable {
+    case vnc, terminal
+
+    var label: String { self == .vnc ? "Screen" : "Terminal" }
+    var symbol: String { self == .vnc ? "desktopcomputer" : "terminal" }
+}
+
 struct Host: Codable, Identifiable, Hashable {
     var id = UUID()
     var name = ""
+    /// Optional so hosts saved before terminal support still decode.
+    private var connection: ConnectionType?
+    var type: ConnectionType {
+        get { connection ?? .vnc }
+        set { connection = newValue }
+    }
     var sshHost = ""
     var sshPort = 22
     var username = ""
@@ -26,10 +39,12 @@ struct Host: Codable, Identifiable, Hashable {
     /// Trusted on first use: `SHA256:…` of the server's host key.
     var hostKeyFingerprint: String?
 
-    var subtitle: String { "\(username)@\(sshHost)\(sshPort == 22 ? "" : ":\(sshPort)") → :\(vncPort)" }
+    var subtitle: String {
+        "\(username)@\(sshHost)\(sshPort == 22 ? "" : ":\(sshPort)")" + (type == .vnc ? " → :\(vncPort)" : "")
+    }
     var isComplete: Bool {
         !name.trimmed.isEmpty && !sshHost.trimmed.isEmpty && !username.trimmed.isEmpty && keyID != nil
-            && !vncHost.trimmed.isEmpty
+            && (type == .terminal || !vncHost.trimmed.isEmpty)
     }
 }
 
