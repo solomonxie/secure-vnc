@@ -70,6 +70,21 @@ final class TunnelIntegrationTests: XCTestCase {
         XCTAssertTrue(types.contains(30))
     }
 
+    func testShellRunsCommands() async throws {
+        let store = SSHKeyStore(secrets: MemorySecretStore())
+        let info = try store.generate(name: "live", kind: .ed25519, requireUserPresence: false)
+        try startSSHD(authorizing: info.publicKey)
+        let shell = try await SSHTunnel.openShell(
+            SSHEndpoint(host: "127.0.0.1", port: 2222, username: NSUserName()), key: { try store.privateKey(for: info) },
+            verifyHostKey: { _ in })
+        defer { shell.close() }
+        shell.send(Array("echo hi-$((1+2)); echo err >&2; tty\r".utf8))
+        var out = ""
+        while !(out.contains("hi-3") && out.contains("err") && out.contains("/dev/tty")) {
+            out += String(decoding: try await shell.readAvailable(), as: UTF8.self)
+        }
+    }
+
     func testUnknownKeyIsRejected() async throws {
         let store = SSHKeyStore(secrets: MemorySecretStore())
         let allowed = try store.generate(name: "a", kind: .ed25519, requireUserPresence: false)
