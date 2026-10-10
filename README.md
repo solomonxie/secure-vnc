@@ -13,7 +13,10 @@ but without a local port: VNC runs inside an SSH `direct-tcpip` channel in-proce
 - Copy / share the public key, or a one-line `authorized_keys` install command.
 - Host keys trusted on first use (`SHA256:` fingerprint); a changed key blocks the connection.
 - VNC auth: macOS account (Apple ARD, type 30), VNC password, or none. Encodings: ZRLE, CopyRect, Raw, cursor, resize.
-- **Terminal** host type: line-based shell on a `dumb` pty — live output, selectable text, sudo/password and y/n prompts, ^C/^D, command history; console kept across reconnects.
+- **Terminal** host type: line-based shell on a `dumb` pty — live output, selectable text, sudo/password and y/n prompts, ^C/^D, command history; console kept across reconnects; wrap at screen width, 160 columns or not at all (sideways scroll), pinch to zoom.
+- Talk to one tmux pane without attaching: pick it from a list; its text is mirrored and commands are typed into it (`capture-pane`/`send-keys`).
+- Talk to a running **Claude Code** session: pick it by name (from `~/.claude/sessions`); its transcript `.jsonl` is shown as clean prompt / reply / tool lines instead of the TUI, messages are typed into its tmux pane, esc interrupts, and a screen peek shows permission prompts.
+- File browser from the terminal's current folder: browse, view/edit text, copy/cut/paste, rename, delete, new folder, cd there — plain `sh` over the same SSH connection, no SFTP needed.
 - Sessions survive a quick trip to another app; a link iOS dropped reconnects on return.
 - Trackpad or direct-touch control, pinch zoom, two-finger scroll/right click, keyboard with esc/tab/⌃⌥⌘/arrows bar, hardware keyboard.
 - No third-party services; dependencies: [swift-nio-ssh](https://github.com/apple/swift-nio-ssh), [BigInt](https://github.com/attaswift/BigInt).
