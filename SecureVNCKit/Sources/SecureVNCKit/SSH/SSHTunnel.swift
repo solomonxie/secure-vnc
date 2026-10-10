@@ -63,6 +63,30 @@ public final class SSHTunnel: ByteTransport, @unchecked Sendable {
         _ endpoint: SSHEndpoint, key: @escaping KeyProvider, verifyHostKey: @escaping HostKeyVerifier,
         targetHost: String, targetPort: Int, onStatus: @escaping @Sendable (SSHTunnelStatus) -> Void = { _ in }
     ) async throws -> SSHTunnel {
+        let target = SSHChannelType.DirectTCPIP(
+            targetHost: targetHost, targetPort: targetPort,
+            originatorAddress: try! SocketAddress(ipAddress: "127.0.0.1", port: 0))
+        return try await open(endpoint, key: key, verifyHostKey: verifyHostKey, channel: .directTCPIP(target), onStatus: onStatus)
+    }
+
+    /// A login shell on a `dumb` pty, so prompts like sudo's password and y/n questions work.
+    public static func openShell(
+        _ endpoint: SSHEndpoint, key: @escaping KeyProvider, verifyHostKey: @escaping HostKeyVerifier,
+        columns: Int = 80, rows: Int = 24, onStatus: @escaping @Sendable (SSHTunnelStatus) -> Void = { _ in }
+    ) async throws -> SSHTunnel {
+        let tunnel = try await open(endpoint, key: key, verifyHostKey: verifyHostKey, channel: .session, onStatus: onStatus)
+        let pty = SSHChannelRequestEvent.PseudoTerminalRequest(
+            wantReply: false, term: "dumb", terminalCharacterWidth: columns, terminalRowHeight: rows,
+            terminalPixelWidth: 0, terminalPixelHeight: 0, terminalModes: SSHTerminalModes([:]))
+        try await tunnel.child.triggerUserOutboundEvent(pty).get()
+        try await tunnel.child.triggerUserOutboundEvent(SSHChannelRequestEvent.ShellRequest(wantReply: false)).get()
+        return tunnel
+    }
+
+    private static func open(
+        _ endpoint: SSHEndpoint, key: @escaping KeyProvider, verifyHostKey: @escaping HostKeyVerifier,
+        channel channelType: SSHChannelType, onStatus: @escaping @Sendable (SSHTunnelStatus) -> Void
+    ) async throws -> SSHTunnel {
         let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
         let state = FailureState()
         let userAuth = KeyAuthDelegate(username: endpoint.username, key: key, state: state, onStatus: onStatus)
@@ -94,10 +118,7 @@ public final class SSHTunnel: ByteTransport, @unchecked Sendable {
         do {
             let child = try await connection.pipeline.handler(type: NIOSSHHandler.self).flatMap { ssh in
                 let promise = connection.eventLoop.makePromise(of: Channel.self)
-                let target = SSHChannelType.DirectTCPIP(
-                    targetHost: targetHost, targetPort: targetPort,
-                    originatorAddress: try! SocketAddress(ipAddress: "127.0.0.1", port: 0))
-                ssh.createChannel(promise, channelType: .directTCPIP(target)) { child, _ in
+                ssh.createChannel(promise, channelType: channelType) { child, _ in
                     child.eventLoop.makeCompletedFuture {
                         try child.pipeline.syncOperations.addHandler(TunnelDataHandler(continuation: continuation))
                     }
@@ -110,8 +131,9 @@ public final class SSHTunnel: ByteTransport, @unchecked Sendable {
             try? await group.shutdownGracefully()
             if let cause = state.error { throw cause }
             if userAuth.exhausted { throw SSHTunnelError.keyRejected }
-            if error is ChannelError || "\(error)".contains("ChannelOpenFailure") || "\(error)".contains("channelSetupRejected") {
-                throw SSHTunnelError.forwardFailed(host: targetHost, port: targetPort)
+            if case .directTCPIP(let target) = channelType, error is ChannelError
+                || "\(error)".contains("ChannelOpenFailure") || "\(error)".contains("channelSetupRejected") {
+                throw SSHTunnelError.forwardFailed(host: target.targetHost, port: target.targetPort)
             }
             throw SSHTunnelError.unreachable(error.localizedDescription)
         }
@@ -154,10 +176,19 @@ public final class SSHTunnel: ByteTransport, @unchecked Sendable {
 
     public func read(_ count: Int) async throws -> [UInt8] { try await reader.read(count) }
 
+    /// Whatever bytes arrive next; throws `TransportError.closed` at end of stream.
+    public func readAvailable() async throws -> [UInt8] { try await reader.readAvailable() }
+
     public func send(_ bytes: [UInt8]) {
         var buf = child.allocator.buffer(capacity: bytes.count)
         buf.writeBytes(bytes)
         child.writeAndFlush(SSHChannelData(type: .channel, data: .byteBuffer(buf)), promise: nil)
+    }
+
+    public func resize(columns: Int, rows: Int) {
+        let event = SSHChannelRequestEvent.WindowChangeRequest(
+            terminalCharacterWidth: columns, terminalRowHeight: rows, terminalPixelWidth: 0, terminalPixelHeight: 0)
+        child.triggerUserOutboundEvent(event, promise: nil)
     }
 
     public func close() {
@@ -259,7 +290,7 @@ final class TunnelDataHandler: ChannelInboundHandler {
 
     func channelRead(context: ChannelHandlerContext, data: NIOAny) {
         let message = unwrapInboundIn(data)
-        guard case .channel = message.type, case .byteBuffer(var buf) = message.data else { return }
+        guard case .byteBuffer(var buf) = message.data else { return }
         if let bytes = buf.readBytes(length: buf.readableBytes) { continuation.yield(bytes) }
     }
 

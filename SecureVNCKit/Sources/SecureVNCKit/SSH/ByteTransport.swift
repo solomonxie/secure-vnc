@@ -34,4 +34,13 @@ final class ChunkReader {
         offset += count
         return out
     }
+
+    func readAvailable() async throws -> [UInt8] {
+        if offset < buffer.count {
+            defer { buffer = []; offset = 0 }
+            return Array(buffer[offset...])
+        }
+        guard let chunk = try await iterator.next() else { throw TransportError.closed }
+        return chunk
+    }
 }
