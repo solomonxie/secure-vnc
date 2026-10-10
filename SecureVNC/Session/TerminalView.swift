@@ -18,6 +18,9 @@ final class Terminal: ObservableObject {
     /// option menus only exist there.
     @Published var claudeScreen = false
     private var claudeOffset = -1
+    private var claudeBase = ""
+    /// A prompt typed here and shown at once, until the transcript records it.
+    private var pendingPrompt: String?
     private var mirrorTask: Task<Void, Never>?
     private var tunnel: SSHTunnel?
     private var pending: [UInt8] = []
@@ -63,10 +66,12 @@ final class Terminal: ObservableObject {
         mirrorTask?.cancel()
         pane = nil
         claude = session
-        claudeOutput = ""
+        claudeBase = ""
+        pendingPrompt = nil
         paneOutput = ""
         claudeScreen = false
         claudeOffset = -1
+        renderClaude()
         if session != nil { pollClaude() }
     }
 
@@ -105,18 +110,35 @@ final class Terminal: ObservableObject {
                 paneOutput = text
             }
             claudeOffset = update.offset
-            if !update.text.isEmpty { claudeOutput = Self.trimmed(claudeOutput + update.text) }
-            if update.status != claude.status {
-                self.claude?.status = update.status
-                if update.status == "exited" { claudeOutput += "\n[session ended]\n"; return false }
+            if !update.text.isEmpty {
+                claudeBase = Self.trimmed(claudeBase + update.text)
+                if let prompt = pendingPrompt, update.text.contains("❯ " + prompt) { pendingPrompt = nil }
             }
-            return true
+            if update.status != claude.status { self.claude?.status = update.status }
+            if update.status == "exited" {
+                claudeBase += "\n[session ended]\n"
+                pendingPrompt = nil
+            }
+            renderClaude()
+            return update.status != "exited"
         } catch {
             guard self.claude == claude else { return false }
-            claudeOutput += "\n[\(error.localizedDescription)]\n"
+            claudeBase += "\n[\(error.localizedDescription)]\n"
+            pendingPrompt = nil
+            renderClaude()
             return false
         }
     }
+
+    /// Transcript, then the prompt not yet echoed back, then `⋯` while Claude is working.
+    private func renderClaude() {
+        var out = claudeBase
+        if let pendingPrompt { out += "\n❯ \(pendingPrompt)\n" }
+        if pendingPrompt != nil || claude?.busy == true { out += "\n⋯\n" }
+        claudeOutput = out
+    }
+
+    var claudeWorking: Bool { claude != nil && (pendingPrompt != nil || claude?.busy == true) }
 
     private func refreshPane() async {
         guard let pane, let panes else { return }
@@ -132,14 +154,17 @@ final class Terminal: ObservableObject {
 
     private func toPane(_ action: @escaping (RemotePanes, String) async throws -> Void) {
         guard let target = targetPane, let panes else {
-            if claude != nil { claudeOutput += "\n[This session isn't in a tmux pane, so it can only be read.]\n" }
+            if claude != nil {
+                claudeBase += "\n[This session isn't in a tmux pane, so it can only be read.]\n"
+                pendingPrompt = nil
+                renderClaude()
+            }
             return
         }
         Task {
             try? await action(panes, target)
-            guard pane != nil else { return }
             try? await Task.sleep(for: .milliseconds(120))
-            await refreshPane()
+            if pane != nil { await refreshPane() } else { _ = await refreshClaude() }
         }
     }
 
@@ -153,6 +178,10 @@ final class Terminal: ObservableObject {
 
     func send(_ line: String, secret: Bool = false) {
         if !secret, !line.isEmpty, history.last != line { history.append(line) }
+        if claude != nil, !line.isEmpty {
+            pendingPrompt = line
+            renderClaude()
+        }
         if pane != nil || claude != nil { return toPane { try await $0.sendLine($1, line) } }
         tunnel?.send(Array((line + "\r").utf8))
     }
@@ -281,8 +310,12 @@ struct TerminalView: View {
             VStack(alignment: .leading, spacing: 0) {
                 Text(title).font(.subheadline.weight(.semibold))
                 if let claude = terminal.claude {
-                    Text("claude \(claude.name) · \(claude.status)\(terminal.claudeScreen ? " · screen" : "")").font(.caption2)
-                        .foregroundStyle(claude.exited ? .gray : claude.busy ? .orange : .green)
+                    HStack(spacing: 6) {
+                        Text("claude \(claude.name) · \(claude.status)\(terminal.claudeScreen ? " · screen" : "")")
+                        if terminal.claudeWorking { ProgressView().controlSize(.mini).tint(.orange) }
+                    }
+                    .font(.caption2)
+                    .foregroundStyle(claude.exited ? .gray : claude.busy ? .orange : .green)
                 } else if let pane = terminal.pane {
                     Text("tmux \(pane.target)").font(.caption2).foregroundStyle(.green)
                 }
