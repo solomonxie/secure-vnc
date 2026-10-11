@@ -441,7 +441,7 @@ struct TerminalView: View {
             .autocorrectionDisabled()
             .submitLabel(.done)
             .focused($focused)
-            .onSubmit(submit)
+            .onSubmit { focused = false }
             .onChange(of: command) { _, text in
                 guard keyMode, !text.isEmpty else { return }
                 terminal.sendText(text)
