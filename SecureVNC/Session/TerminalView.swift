@@ -13,6 +13,8 @@ final class Terminal: ObservableObject {
     /// A tmux pane mirrored instead of this connection's shell, which keeps running underneath.
     @Published private(set) var pane: RemotePane?
     @Published private(set) var paneOutput = ""
+    /// Each typed character goes to the pane at once, for pagers, monitors and pickers.
+    @Published var keyMode = false
     /// A Claude Code session followed through its transcript; input goes to its tmux pane.
     @Published private(set) var claude: ClaudeSession?
     @Published private(set) var claudeOutput = ""
@@ -61,6 +63,7 @@ final class Terminal: ObservableObject {
         claude = nil
         self.pane = pane
         paneOutput = ""
+        keyMode = pane?.isKeyDriven ?? false
         if pane != nil { pollPane() }
     }
 
@@ -203,6 +206,9 @@ final class Terminal: ObservableObject {
     /// A tmux key name such as `Escape` or `BTab`, for a followed pane or Claude session.
     func sendKey(_ key: String) { toPane { try await $0.sendKey($1, key) } }
 
+    /// Literal characters with no Enter, for a followed pane.
+    func sendText(_ text: String) { toPane { try await $0.sendText($1, text) } }
+
     func clear() { if pane == nil, claude == nil { output = "" } }
 
     func run() async throws {
@@ -332,7 +338,7 @@ struct TerminalView: View {
                     .font(.caption2)
                     .foregroundStyle(claude.exited ? .gray : claude.busy ? .orange : .green)
                 } else if let pane = terminal.pane {
-                    Text("tmux \(pane.target)").font(.caption2).foregroundStyle(.green)
+                    Text("tmux \(pane.target)\(terminal.keyMode ? " · keys" : "")").font(.caption2).foregroundStyle(.green)
                 }
             }
             .lineLimit(1)
@@ -357,6 +363,9 @@ struct TerminalView: View {
                     Button("Send ^C", systemImage: "xmark.octagon") { terminal.sendControl("c") }
                 } else {
                     Button("Send ^D", systemImage: "eject") { terminal.sendControl("d") }
+                }
+                if terminal.pane != nil {
+                    Toggle("Key Mode", systemImage: "keyboard", isOn: $terminal.keyMode)
                 }
                 if terminal.pane == nil, terminal.claude == nil {
                     Button("Clear", systemImage: "trash") { terminal.clear() }
@@ -389,13 +398,42 @@ struct TerminalView: View {
             .background(.ultraThinMaterial)
     }
 
+    private var keyMode: Bool { terminal.pane != nil && terminal.keyMode }
+
+    private static let keyChips: [(label: String, key: String)] = [
+        ("esc", "Escape"), ("⇥", "Tab"), ("↩", "Enter"), ("⌫", "BSpace"), ("␣", "Space"),
+        ("←", "Left"), ("↓", "Down"), ("↑", "Up"), ("→", "Right"), ("⇞", "PageUp"), ("⇟", "PageDown"),
+        ("q", "q"), ("/", "/"), ("^C", "C-c"), ("^D", "C-d"), ("^Z", "C-z"),
+    ]
+
     private var inputBar: some View {
+        VStack(spacing: 0) {
+            if keyMode { keyBar }
+            inputRow
+        }
+    }
+
+    private var keyBar: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                ForEach(Self.keyChips, id: \.key) { chip in
+                    Button(chip.label) { terminal.sendKey(chip.key) }
+                        .buttonStyle(.bordered).controlSize(.small).tint(.white)
+                }
+            }
+            .padding(.horizontal, 14).padding(.top, 8)
+        }
+        .font(.body.monospaced())
+        .background(.ultraThinMaterial)
+    }
+
+    private var inputRow: some View {
         HStack(spacing: 10) {
             Group {
                 if terminal.wantsSecret {
                     SecureField("password", text: $command)
                 } else {
-                    TextField(terminal.claude != nil ? "message to Claude" : "command", text: $command)
+                    TextField(terminal.claude != nil ? "message to Claude" : keyMode ? "keys go straight through" : "command", text: $command)
                 }
             }
             .font(.system(.body, design: .monospaced))
@@ -404,6 +442,11 @@ struct TerminalView: View {
             .submitLabel(.done)
             .focused($focused)
             .onSubmit(submit)
+            .onChange(of: command) { _, text in
+                guard keyMode, !text.isEmpty else { return }
+                terminal.sendText(text)
+                command = ""
+            }
             Button { step(-1) } label: { Image(systemName: "chevron.up") }
                 .disabled(terminal.history.isEmpty).accessibilityLabel("Previous command")
             Button { step(1) } label: { Image(systemName: "chevron.down") }
@@ -416,6 +459,11 @@ struct TerminalView: View {
     }
 
     private func submit() {
+        if keyMode {
+            terminal.sendKey("Enter")
+            focused = true
+            return
+        }
         terminal.send(command, secret: terminal.wantsSecret)
         command = ""
         recall = nil
