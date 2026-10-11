@@ -18,14 +18,23 @@ final class FileBrowser: ObservableObject {
     @Published private(set) var revision = 0
     @Published var error: String?
 
-    init(files: RemoteFiles, terminal: Terminal) {
+    /// Opens straight onto this file, with its folder underneath.
+    let open: RemoteFile?
+
+    init(files: RemoteFiles, terminal: Terminal, open: RemoteFile? = nil) {
         self.files = files
         self.terminal = terminal
+        self.open = open
     }
 
     func start() async {
         guard root == nil else { return }
-        root = await terminal.currentDirectory()
+        if let open {
+            root = RemoteFiles.parent(open.path)
+            stack.append(open)
+        } else {
+            root = await terminal.currentDirectory()
+        }
     }
 
     func jump(to dir: String) {
@@ -54,8 +63,8 @@ struct FileBrowserView: View {
     @StateObject private var browser: FileBrowser
     @Environment(\.dismiss) private var dismiss
 
-    init(files: RemoteFiles, terminal: Terminal) {
-        _browser = StateObject(wrappedValue: FileBrowser(files: files, terminal: terminal))
+    init(files: RemoteFiles, terminal: Terminal, open: RemoteFile? = nil) {
+        _browser = StateObject(wrappedValue: FileBrowser(files: files, terminal: terminal, open: open))
     }
 
     var body: some View {

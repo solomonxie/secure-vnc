@@ -8,6 +8,8 @@ final class Terminal: ObservableObject {
     @Published private(set) var output = ""
     @Published private(set) var history: [String] = []
     @Published var clipboard: FileClipboard?
+    /// A file the picker chose from an editor pane, for the terminal view to open.
+    @Published var fileToOpen: RemoteFile?
     /// A tmux pane mirrored instead of this connection's shell, which keeps running underneath.
     @Published private(set) var pane: RemotePane?
     @Published private(set) var paneOutput = ""
@@ -275,6 +277,7 @@ struct TerminalView: View {
     @State private var recall: Int?
     @State private var browsing = false
     @State private var pickingPane = false
+    @State private var openFile: RemoteFile?
     @AppStorage("terminal.wrap") private var wrap = ConsoleWrap.screen
     @AppStorage("terminal.fontSize") private var fontSize = 13.0
     @FocusState private var focused: Bool
@@ -302,6 +305,18 @@ struct TerminalView: View {
             if let files = terminal.files { FileBrowserView(files: files, terminal: terminal) }
         }
         .sheet(isPresented: $pickingPane) { PanePicker(terminal: terminal) }
+        .sheet(item: $openFile) { file in
+            if let files = terminal.files { FileBrowserView(files: files, terminal: terminal, open: file) }
+        }
+        .onChange(of: terminal.fileToOpen) { _, file in
+            guard let file else { return }
+            terminal.fileToOpen = nil
+            // Let the picker sheet finish dismissing before presenting another.
+            Task {
+                try? await Task.sleep(for: .milliseconds(500))
+                openFile = file
+            }
+        }
     }
 
     private var header: some View {
@@ -593,8 +608,9 @@ struct PanePicker: View {
                         if panes.isEmpty { Text("No tmux sessions on this host.").foregroundStyle(.secondary) }
                         ForEach(panes) { pane in
                             row(title: "\(pane.target)  \(pane.windowName)",
-                                detail: "\(pane.command) · \(pane.path)", selected: terminal.pane?.id == pane.id) {
-                                terminal.follow(pane)
+                                detail: pane.isEditor ? "\(pane.command) · opens its file in the text editor" : "\(pane.command) · \(pane.path)",
+                                selected: terminal.pane?.id == pane.id, icon: pane.isEditor ? "doc.text" : nil) {
+                                if pane.isEditor { openEditorFile(pane) } else { terminal.follow(pane) }
                             }
                         }
                     } else if let error {
@@ -641,7 +657,7 @@ struct PanePicker: View {
         return s < 60 ? "\(s)s" : s < 3600 ? "\(s / 60)m" : s < 86400 ? "\(s / 3600)h" : "\(s / 86400)d"
     }
 
-    private func row(title: String, detail: String, selected: Bool, action: @escaping () -> Void) -> some View {
+    private func row(title: String, detail: String, selected: Bool, icon: String? = nil, action: @escaping () -> Void) -> some View {
         Button {
             action()
             dismiss()
@@ -652,7 +668,20 @@ struct PanePicker: View {
                     Text(detail).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
                 }
                 Spacer()
+                if let icon { Image(systemName: icon).foregroundStyle(.secondary) }
                 if selected { Image(systemName: "checkmark").foregroundStyle(.tint) }
+            }
+        }
+    }
+
+    /// Opens the editor's file in the app; falls back to mirroring the pane when it can't be found.
+    private func openEditorFile(_ pane: RemotePane) {
+        guard let remote = terminal.panes else { return }
+        Task {
+            if let path = try? await remote.editorFile(pane) {
+                terminal.fileToOpen = RemoteFile(name: (path as NSString).lastPathComponent, path: path, isDirectory: false, size: nil)
+            } else {
+                terminal.follow(pane)
             }
         }
     }
