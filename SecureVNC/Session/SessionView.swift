@@ -64,6 +64,10 @@ struct SessionView: View {
                     Image(systemName: trackpad ? "rectangle.and.hand.point.up.left" : "hand.point.up.left")
                 }
                 .accessibilityLabel(trackpad ? "Trackpad mode" : "Touch mode")
+                if model.canUnlock {
+                    Button { model.unlock(); barVisible = true } label: { Image(systemName: "lock.open") }
+                        .accessibilityLabel("Unlock with saved password")
+                }
             }
             .font(.body.weight(.medium))
             .foregroundStyle(.white)

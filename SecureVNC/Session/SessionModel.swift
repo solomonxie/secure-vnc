@@ -183,6 +183,37 @@ final class SessionModel: ObservableObject {
         }
     }
 
+    /// The lock screen can be unlocked with the saved macOS password.
+    var canUnlock: Bool { host.auth == .macOS && !(store?.password(for: host.id).isEmpty ?? true) }
+
+    /// Wakes the lock screen, then types the saved macOS password and Return.
+    func unlock() {
+        guard let client, let store, canUnlock else { return }
+        let password = store.password(for: host.id)
+        Task {
+            Self.tap(client, 0xFFE1)
+            try? await Task.sleep(for: .milliseconds(700))
+            for ch in password.unicodeScalars { Self.type(client, ch) }
+            Self.tap(client, 0xFF0D)
+        }
+    }
+
+    private static let shifted = Set(#"~!@#$%^&*()_+{}|:"<>?"#.unicodeScalars)
+
+    /// X11 keysyms match Latin-1 code points; Shift is held for characters that need it on a US layout.
+    private static func type(_ client: RFBClient, _ ch: Unicode.Scalar) {
+        let sym = ch.value < 0x100 ? ch.value : 0x0100_0000 + ch.value
+        let shift = shifted.contains(ch) || ("A"..."Z").contains(ch)
+        if shift { client.key(0xFFE1, down: true) }
+        tap(client, sym)
+        if shift { client.key(0xFFE1, down: false) }
+    }
+
+    private static func tap(_ client: RFBClient, _ sym: UInt32) {
+        client.key(sym, down: true)
+        client.key(sym, down: false)
+    }
+
     private func vncAuth(_ host: Host, _ store: AppStore) -> VNCAuth {
         let password = store.password(for: host.id)
         switch host.auth {
