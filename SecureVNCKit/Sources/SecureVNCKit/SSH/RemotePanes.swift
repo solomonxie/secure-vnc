@@ -12,6 +12,13 @@ public struct RemotePane: Hashable, Sendable, Identifiable {
     public static let editors: Set<String> = ["vim", "nvim", "vi", "emacs", "nano", "micro", "hx"]
     /// The pane's foreground program is a text editor, so its file is better opened in the app.
     public var isEditor: Bool { Self.editors.contains(command) }
+
+    public static let keyDriven: Set<String> = [
+        "less", "more", "man", "htop", "btop", "top", "k9s", "lazygit", "lazydocker", "gitui", "tig", "ncdu",
+        "fzf", "ranger", "nnn", "lf", "yazi", "mc", "dialog", "whiptail", "glow", "bat", "ssh", "python", "node",
+    ]
+    /// The pane's program reads single keys, so typed characters should go straight through.
+    public var isKeyDriven: Bool { Self.keyDriven.contains(command) }
 }
 
 /// One tmux pane without attaching: `capture-pane` to read it, `send-keys` to type into it.
@@ -50,8 +57,13 @@ public struct RemotePanes: Sendable {
 
     /// Types `text` literally, then Enter.
     public func sendLine(_ pane: String, _ text: String) async throws {
-        if !text.isEmpty { _ = try await tmux(["send-keys", "-t", pane, "-l", "--", text]) }
+        try await sendText(pane, text)
         _ = try await tmux(["send-keys", "-t", pane, "Enter"])
+    }
+
+    /// Types `text` literally, no Enter.
+    public func sendText(_ pane: String, _ text: String) async throws {
+        if !text.isEmpty { _ = try await tmux(["send-keys", "-t", pane, "-l", "--", text]) }
     }
 
     /// A tmux key name such as `C-c`.
