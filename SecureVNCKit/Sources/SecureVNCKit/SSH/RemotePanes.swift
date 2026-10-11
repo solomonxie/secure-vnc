@@ -8,6 +8,10 @@ public struct RemotePane: Hashable, Sendable, Identifiable {
     public var command: String
     public var path: String
     public var active: Bool
+
+    public static let editors: Set<String> = ["vim", "nvim", "vi", "emacs", "nano", "micro", "hx"]
+    /// The pane's foreground program is a text editor, so its file is better opened in the app.
+    public var isEditor: Bool { Self.editors.contains(command) }
 }
 
 /// One tmux pane without attaching: `capture-pane` to read it, `send-keys` to type into it.
@@ -53,6 +57,42 @@ public struct RemotePanes: Sendable {
     /// A tmux key name such as `C-c`.
     public func sendKey(_ pane: String, _ key: String) async throws {
         _ = try await tmux(["send-keys", "-t", pane, key])
+    }
+
+    /// The file a text editor running in the pane has open, or nil when none can be found.
+    /// vim/nvim: the swap file; any editor: the first file argument, relative to the editor's cwd.
+    public func editorFile(_ pane: RemotePane) async throws -> String? {
+        let pid = try await tmux(["display-message", "-p", "-t", pane.id, "#{pane_pid}"]).trimmingCharacters(in: .newlines)
+        let result = try await tunnel.exec(RemoteFiles.command(#"""
+        pid=$1; names="$2"; ed=""
+        is_editor() { case " $names " in *" $(ps -o comm= -p "$1" | sed 's#.*/##') "*) return 0;; esac; return 1; }
+        walk() {
+          for c in $(pgrep -P "$1"); do
+            if is_editor "$c"; then ed=$c; return; fi
+            walk "$c"; [ -n "$ed" ] && return
+          done
+        }
+        if is_editor "$pid"; then ed=$pid; else walk "$pid"; fi
+        [ -n "$ed" ] || exit 0
+        swp=$(lsof -p "$ed" -Fn 2>/dev/null | sed -n 's/^n//p' | grep -E '\.sw[a-p]$' | head -1)
+        if [ -n "$swp" ]; then
+          b=$(basename -- "$swp"); b=${b%.sw?}
+          case "$b" in
+            %*) printf '%s' "$b" | tr '%' '/'; exit 0;;
+            .*) printf '%s/%s' "$(dirname -- "$swp")" "${b#.}"; exit 0;;
+          esac
+        fi
+        cwd=$(lsof -a -p "$ed" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p')
+        [ -n "$cwd" ] || cwd=$(readlink "/proc/$ed/cwd" 2>/dev/null)
+        set -- $(ps -o args= -p "$ed"); shift
+        for a in "$@"; do
+          case "$a" in -*|+*) continue;; esac
+          case "$a" in /*) printf '%s' "$a";; *) printf '%s/%s' "${cwd:-.}" "$a";; esac
+          exit 0
+        done
+        """#, [pid, RemotePane.editors.sorted().joined(separator: " ")]))
+        let path = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return path.isEmpty ? nil : path
     }
 
     public func currentPath(_ pane: String) async throws -> String {
