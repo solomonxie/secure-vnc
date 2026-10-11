@@ -21,6 +21,9 @@ final class SessionModel: ObservableObject {
     @Published var trustPrompt: TrustPrompt?
     @Published private(set) var client: RFBClient?
     @Published private(set) var terminal: Terminal?
+    /// Shown over the screen while the saved password is being typed into the lock screen.
+    @Published private(set) var unlocking = false
+    @Published var unlockNote: String?
 
     let host: Host
     private var store: AppStore?
@@ -153,6 +156,7 @@ final class SessionModel: ObservableObject {
             self.client = client
             phase = .live
             UIApplication.shared.isIdleTimerDisabled = true
+            if canUnlock { Task { await unlockIfLocked(automatic: true) } }
             try await client.run()
         } catch {
             guard gen == generation, !Task.isCancelled else { return }
@@ -186,16 +190,48 @@ final class SessionModel: ObservableObject {
     /// The lock screen can be unlocked with the saved macOS password.
     var canUnlock: Bool { host.auth == .macOS && !(store?.password(for: host.id).isEmpty ?? true) }
 
-    /// Wakes the lock screen, then types the saved macOS password and Return.
-    func unlock() {
-        guard let client, let store, canUnlock else { return }
-        let password = store.password(for: host.id)
-        Task {
-            Self.tap(client, 0xFFE1)
-            try? await Task.sleep(for: .milliseconds(700))
-            for ch in password.unicodeScalars { Self.type(client, ch) }
-            Self.tap(client, 0xFF0D)
+    func unlock() { Task { await unlockIfLocked(automatic: false) } }
+
+    /// Types the saved password into the lock screen, but only while the Mac reports its screen
+    /// locked, so it can never land in an open window. Confirms over SSH and retries.
+    private func unlockIfLocked(automatic: Bool) async {
+        guard !unlocking, let tunnel, let store, canUnlock else { return }
+        let gen = generation
+        guard let locked = try? await tunnel.macScreenLocked() else {
+            if !automatic { unlockNote = "Couldn't read the Mac's lock state." }
+            return
         }
+        guard locked else {
+            if !automatic { unlockNote = "Already unlocked." }
+            return
+        }
+        unlocking = true
+        defer { unlocking = false }
+        let password = store.password(for: host.id)
+        // A sleeping Mac takes a moment to bring the display up after the connection wakes it.
+        if automatic { try? await Task.sleep(for: .milliseconds(1500)) }
+        for _ in 0..<3 {
+            guard gen == generation, let client = self.client,
+                  (try? await tunnel.macScreenLocked()) == true else { return }
+            Self.tap(client, KeySym.shift)
+            try? await Task.sleep(for: .milliseconds(800))
+            Self.clearField(client)
+            for ch in password.unicodeScalars { Self.type(client, ch) }
+            Self.tap(client, KeySym.enter)
+            for _ in 0..<8 {
+                try? await Task.sleep(for: .milliseconds(400))
+                if (try? await tunnel.macScreenLocked()) == false { return }
+            }
+        }
+        if gen == generation { unlockNote = "Couldn't unlock. Check the saved macOS password." }
+    }
+
+    /// ⌘A then Delete, so a retry doesn't append to a half-typed password.
+    private static func clearField(_ client: RFBClient) {
+        client.key(KeySym.command, down: true)
+        tap(client, 0x61)
+        client.key(KeySym.command, down: false)
+        tap(client, KeySym.backspace)
     }
 
     private static let shifted = Set(#"~!@#$%^&*()_+{}|:"<>?"#.unicodeScalars)
@@ -204,9 +240,9 @@ final class SessionModel: ObservableObject {
     private static func type(_ client: RFBClient, _ ch: Unicode.Scalar) {
         let sym = ch.value < 0x100 ? ch.value : 0x0100_0000 + ch.value
         let shift = shifted.contains(ch) || ("A"..."Z").contains(ch)
-        if shift { client.key(0xFFE1, down: true) }
+        if shift { client.key(KeySym.shift, down: true) }
         tap(client, sym)
-        if shift { client.key(0xFFE1, down: false) }
+        if shift { client.key(KeySym.shift, down: false) }
     }
 
     private static func tap(_ client: RFBClient, _ sym: UInt32) {

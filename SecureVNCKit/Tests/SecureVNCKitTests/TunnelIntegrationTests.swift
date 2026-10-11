@@ -120,6 +120,23 @@ final class TunnelIntegrationTests: XCTestCase {
         do { _ = try await files.list(work + "/missing"); XCTFail("should fail") } catch RemoteFileError.failed {}
     }
 
+    func testMacScreenLockStateMatchesRegistry() async throws {
+        let store = SSHKeyStore(secrets: MemorySecretStore())
+        let info = try store.generate(name: "live", kind: .ed25519, requireUserPresence: false)
+        try startSSHD(authorizing: info.publicKey)
+        let shell = try await SSHTunnel.openShell(
+            SSHEndpoint(host: "127.0.0.1", port: 2222, username: NSUserName()), key: { try store.privateKey(for: info) },
+            verifyHostKey: { _ in })
+        defer { shell.close() }
+        let locked = try await shell.macScreenLocked()
+        let local = Process()
+        local.executableURL = URL(fileURLWithPath: "/bin/sh")
+        local.arguments = ["-c", #"ioreg -n Root -d1 | grep -q '"CGSSessionScreenIsLocked"=Yes'"#]
+        try local.run()
+        local.waitUntilExit()
+        XCTAssertEqual(locked, local.terminationStatus == 0)
+    }
+
     func testTmuxPaneMirror() async throws {
         let store = SSHKeyStore(secrets: MemorySecretStore())
         let info = try store.generate(name: "live", kind: .ed25519, requireUserPresence: false)

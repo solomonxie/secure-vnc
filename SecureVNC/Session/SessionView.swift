@@ -20,6 +20,7 @@ struct SessionView: View {
                 ScreenView(client: client, trackpad: trackpad, keyboard: $keyboard)
                     .ignoresSafeArea(.container)
                 topBar
+                unlockBanner
             } else if let terminal = model.terminal {
                 TerminalView(terminal: terminal, title: model.host.name, phase: model.phase,
                              reconnect: { model.connect(store: store) }, close: { dismiss() })
@@ -49,6 +50,31 @@ struct SessionView: View {
     }
 
     private var isScreenLive: Bool { model.phase == .live && model.client != nil }
+
+    @ViewBuilder private var unlockBanner: some View {
+        if model.unlocking || model.unlockNote != nil {
+            HStack(spacing: 8) {
+                if model.unlocking {
+                    ProgressView().controlSize(.small).tint(.white)
+                    Text("Unlocking…")
+                } else if let note = model.unlockNote {
+                    Text(note)
+                }
+            }
+            .font(.footnote.weight(.medium))
+            .foregroundStyle(.white)
+            .padding(.horizontal, 14).padding(.vertical, 8)
+            .background(.ultraThinMaterial.opacity(0.9), in: Capsule())
+            .environment(\.colorScheme, .dark)
+            .frame(maxHeight: .infinity, alignment: .bottom)
+            .padding(.bottom, 40)
+            .task(id: model.unlockNote) {
+                guard model.unlockNote != nil else { return }
+                try? await Task.sleep(for: .seconds(3))
+                model.unlockNote = nil
+            }
+        }
+    }
 
     @ViewBuilder private var topBar: some View {
         if barVisible {
