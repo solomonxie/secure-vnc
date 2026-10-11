@@ -7,6 +7,13 @@ public struct RemoteFile: Hashable, Sendable, Identifiable {
     public var size: Int?
 
     public var id: String { path }
+
+    public init(name: String, path: String, isDirectory: Bool, size: Int?) {
+        self.name = name
+        self.path = path
+        self.isDirectory = isDirectory
+        self.size = size
+    }
 }
 
 public enum RemoteFileError: Error, LocalizedError {
