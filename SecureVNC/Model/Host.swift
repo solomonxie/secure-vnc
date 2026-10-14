@@ -64,7 +64,7 @@ struct Host: Codable, Identifiable, Hashable {
         (reverse ? "reverse · listens on :\(sshPort)" : "\(username)@\(sshHost)\(sshPort == 22 ? "" : ":\(sshPort)")") + (type == .vnc ? " → :\(vncPort)" : "")
     }
     var isComplete: Bool {
-        if reverse { return !name.trimmed.isEmpty && !serverPublicKey.trimmed.isEmpty }
+        if reverse { return !name.trimmed.isEmpty && !serverPublicKey.trimmed.isEmpty && keyID != nil }
         return !name.trimmed.isEmpty && !sshHost.trimmed.isEmpty && !username.trimmed.isEmpty && keyID != nil
             && (type != .vnc || !vncHost.trimmed.isEmpty)
     }

@@ -108,26 +108,15 @@ final class SessionModel: ObservableObject {
             let text = switch status {
             case .waitingForNetwork: "Waiting for local network access…"
             case .waitingForServer: "Waiting for the server to connect…"
-            case .authenticating: "Authenticating as \(host.username)…"
+            case .authenticating: host.reverse ? "Starting a private sshd there…" : "Authenticating as \(host.username)…"
             }
             Task { @MainActor in self?.status(text, gen) }
         }
         do {
-            if host.reverse {
-                guard Network.wifiAddress != nil else { throw Failure("Join the server's Wi-Fi so it can connect to this iPhone.") }
-                let tunnel = try await SSHTunnel.acceptShell(
-                    port: host.sshPort, hostKey: store.keyStore.reverseHostKey(), clientKey: host.serverPublicKey, onStatus: onStatus)
-                return try await runTerminal(tunnel, gen)
-            }
             guard let keyInfo = store.key(host.keyID) else {
                 throw Failure("This host's key was deleted. Edit the host and pick another.")
             }
-            if Network.offLAN(host.sshHost) {
-                throw Failure("Couldn't reach \(host.sshHost)." + Network.hint(for: host.sshHost))
-            }
             let keyStore = store.keyStore
-            let expected = host.hostKeyFingerprint
-            let endpoint = SSHEndpoint(host: host.sshHost, port: host.sshPort, username: host.username)
             let key: KeyProvider = {
                 var context: LAContext?
                 if keyInfo.requiresUserPresence {
@@ -137,6 +126,19 @@ final class SessionModel: ObservableObject {
                 }
                 return try keyStore.privateKey(for: keyInfo, context: context)
             }
+            if host.reverse {
+                guard Network.wifiAddress != nil else { throw Failure("Join the server's Wi-Fi so it can connect to this iPhone.") }
+                let tunnel = try await SSHTunnel.acceptReverse(
+                    port: host.sshPort, hostKey: keyStore.reverseHostKey(), clientKey: host.serverPublicKey,
+                    phoneKey: keyInfo.publicKey, key: key,
+                    onStatus: onStatus)
+                return try await runTerminal(tunnel, gen)
+            }
+            if Network.offLAN(host.sshHost) {
+                throw Failure("Couldn't reach \(host.sshHost)." + Network.hint(for: host.sshHost))
+            }
+            let expected = host.hostKeyFingerprint
+            let endpoint = SSHEndpoint(host: host.sshHost, port: host.sshPort, username: host.username)
             let verify: HostKeyVerifier = { [weak self] pub in
                 let got = SSHFingerprint.of(pub)
                 if let expected {

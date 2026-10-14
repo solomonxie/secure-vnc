@@ -27,8 +27,6 @@ final class Terminal: ObservableObject {
     private var pendingPrompt: String?
     private var mirrorTask: Task<Void, Never>?
     private var tunnel: SSHTunnel?
-    /// Files, tmux panes and Claude sessions need their own exec channels; a reverse shell has none.
-    @Published private(set) var canExec = true
     private var pending: [UInt8] = []
     private var carriageReturn = false
     private var size = (columns: 0, rows: 0)
@@ -38,7 +36,6 @@ final class Terminal: ObservableObject {
     func attach(_ tunnel: SSHTunnel) {
         if !output.isEmpty { append("\n──── reconnected ────\n") }
         self.tunnel = tunnel
-        canExec = tunnel.canExec
         pending = []
         carriageReturn = false
         if size.columns > 0 { tunnel.resize(columns: size.columns, rows: size.rows) }
@@ -351,14 +348,12 @@ struct TerminalView: View {
             } else {
                 Button("^C") { terminal.sendControl("c") }.accessibilityLabel("Interrupt")
             }
-            if terminal.canExec {
-                Button { browsing = true } label: { Image(systemName: "folder") }
-                    .disabled(phase != .live).accessibilityLabel("Files")
-                Button { pickingPane = true } label: {
-                    Image(systemName: terminal.claude != nil ? "sparkles" : terminal.pane == nil ? "rectangle.split.2x1" : "rectangle.split.2x1.fill")
-                }
-                .disabled(phase != .live).accessibilityLabel("Talk to")
+            Button { browsing = true } label: { Image(systemName: "folder") }
+                .disabled(phase != .live).accessibilityLabel("Files")
+            Button { pickingPane = true } label: {
+                Image(systemName: terminal.claude != nil ? "sparkles" : terminal.pane == nil ? "rectangle.split.2x1" : "rectangle.split.2x1.fill")
             }
+            .disabled(phase != .live).accessibilityLabel("Talk to")
             Menu {
                 if terminal.claude != nil {
                     Toggle("Show Screen", systemImage: "rectangle.on.rectangle", isOn: $terminal.claudeScreen)

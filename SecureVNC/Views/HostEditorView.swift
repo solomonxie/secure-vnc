@@ -73,10 +73,12 @@ struct HostEditorView: View {
                 .font(.caption.monospaced())
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
+            keyRow
+            if keyPickerOpen { keyOptions }
         } header: {
             Text("Reverse SSH")
         } footer: {
-            Text("For a server that can't accept connections. Paste its public key: `cat ~/.ssh/id_ed25519.pub` there. On the same Wi-Fi, this app listens while open and the server's own ssh connects in with that key, using a command shown when you connect. Nothing is installed on the server.")
+            Text("For a server without Remote Login. Paste its public key: `cat ~/.ssh/id_ed25519.pub` there. On the same Wi-Fi, this app listens while open and the server's own ssh connects in with that key, using a command shown when you connect. The app then starts a private sshd there on localhost, as you, for this connection only, and logs in with Key: files, tmux and Claude work as in Terminal.")
         }
     }
 
