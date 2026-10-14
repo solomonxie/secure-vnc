@@ -52,5 +52,16 @@ public struct SSHKeyStore: Sendable {
 
     public func delete(_ info: SSHKeyInfo) { secrets.delete(account(info.id)) }
 
+    /// This device's host key for reverse shells, created on first use.
+    public func reverseHostKey() throws -> NIOSSHPrivateKey {
+        let account = "reverse-host-key"
+        if let data = try? secrets.get(account, context: nil) {
+            return NIOSSHPrivateKey(ed25519Key: try Curve25519.Signing.PrivateKey(rawRepresentation: data))
+        }
+        let key = Curve25519.Signing.PrivateKey()
+        try secrets.set(key.rawRepresentation, for: account, requireUserPresence: false)
+        return NIOSSHPrivateKey(ed25519Key: key)
+    }
+
     private func account(_ id: UUID) -> String { "sshkey." + id.uuidString }
 }

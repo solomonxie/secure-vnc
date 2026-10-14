@@ -205,6 +205,76 @@ final class TunnelIntegrationTests: XCTestCase {
         } catch SSHTunnelError.forwardFailed {} catch { XCTFail("\(error)") }
     }
 
+    /// The phone is the SSH server; this Mac's own ssh client connects to it and wires up a shell.
+    func reverseCommand(port: Int, identity: String) -> String {
+        ReverseSSH.serverCommand(phone: "127.0.0.1", port: port)
+            .replacingOccurrences(of: "/tmp/f", with: dir.appendingPathComponent("fifo").path)
+            .replacingOccurrences(of: "ssh ", with: "ssh -i \(identity) -oIdentitiesOnly=yes -oIdentityAgent=none"
+                + " -oStrictHostKeyChecking=no -oUserKnownHostsFile=/dev/null ")
+    }
+
+    func startReverse(_ command: String) throws -> Process {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/bin/sh")
+        p.arguments = ["-c", command]
+        p.environment = ["SHELL": "/bin/sh", "PATH": "/usr/bin:/bin"]
+        p.standardError = FileHandle.nullDevice
+        try p.run()
+        return p
+    }
+
+    /// The shell `script` started outlives the disconnect until it's interrupted, as with Ctrl-C.
+    func stop(_ p: Process) {
+        try? run("/usr/bin/pkill", ["-P", "\(p.processIdentifier)"])
+        p.terminate()
+    }
+
+    func clientKey(_ name: String) throws -> (path: String, publicKey: String) {
+        let path = dir.appendingPathComponent(name).path
+        try run("/usr/bin/ssh-keygen", ["-q", "-t", "ed25519", "-N", "", "-f", path])
+        return (path, try String(contentsOfFile: path + ".pub", encoding: .utf8))
+    }
+
+    func testReverseShellPerRun() async throws {
+        let client = try clientKey("client")
+        let hostKey = NIOSSHPrivateKey(ed25519Key: .init())
+        for round in 1...2 {
+            let mac = try startReverse(reverseCommand(port: 2299, identity: client.path))
+            defer { stop(mac) }
+            let shell = try await SSHTunnel.acceptShell(port: 2299, hostKey: hostKey, clientKey: client.publicKey)
+            XCTAssertFalse(shell.canExec)
+            shell.send(Array("echo reversed-$((\(round)+1))\r".utf8))
+            var out = ""
+            while !out.contains("reversed-\(round + 1)\r\n") && !out.contains("reversed-\(round + 1)\n") {
+                out += String(decoding: try await shell.readAvailable(), as: UTF8.self)
+            }
+            shell.close()
+        }
+    }
+
+    func testReverseShellRejectsOtherKey() async throws {
+        let saved = try clientKey("saved")
+        let other = try clientKey("other")
+        let hostKey = NIOSSHPrivateKey(ed25519Key: .init())
+        let mac = try startReverse(reverseCommand(port: 2297, identity: other.path))
+        defer { stop(mac) }
+        do {
+            _ = try await SSHTunnel.acceptShell(port: 2297, hostKey: hostKey, clientKey: saved.publicKey)
+            XCTFail("should reject")
+        } catch SSHTunnelError.clientKeyRejected {} catch { XCTFail("\(error)") }
+    }
+
+    func testCancelStopsListening() async throws {
+        let hostKey = NIOSSHPrivateKey(ed25519Key: .init())
+        let key = try clientKey("client").publicKey
+        for _ in 1...2 {
+            let task = Task { try await SSHTunnel.acceptShell(port: 2298, hostKey: hostKey, clientKey: key) }
+            try await Task.sleep(for: .milliseconds(300))
+            task.cancel()
+            if case .failure(SSHTunnelError.unreachable(let why)) = await task.result { XCTFail(why) }
+        }
+    }
+
     private func run(_ path: String, _ args: [String]) throws {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: path)

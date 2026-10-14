@@ -9,6 +9,9 @@ public enum SSHTunnelError: Error, LocalizedError {
     case hostKeyRejected
     case hostKeyChanged(expected: String, got: String)
     case forwardFailed(host: String, port: Int)
+    case badClientKey
+    case clientKeyRejected
+    case closedBeforeShell
 
     public var errorDescription: String? {
         switch self {
@@ -18,6 +21,9 @@ public enum SSHTunnelError: Error, LocalizedError {
         case .hostKeyChanged(let expected, let got):
             "Host key changed — possible attack.\nExpected \(expected)\nGot \(got)"
         case .forwardFailed(let host, let port): "Couldn't reach \(host):\(port) through SSH — is Screen Sharing on?"
+        case .badClientKey: "The server's public key isn't valid. Paste one line like ssh-ed25519 AAAA…"
+        case .clientKeyRejected: "The server connected with a key that isn't the one saved for this host."
+        case .closedBeforeShell: "The server connected but closed before starting a shell."
         }
     }
 }
@@ -40,6 +46,7 @@ public typealias KeyProvider = @Sendable () async throws -> NIOSSHPrivateKey
 
 public enum SSHTunnelStatus: Sendable {
     case waitingForNetwork
+    case waitingForServer
     case authenticating
 }
 
@@ -49,12 +56,16 @@ public final class SSHTunnel: ByteTransport, @unchecked Sendable {
     private let connection: Channel
     private let child: Channel
     private let reader: ChunkReader
+    /// False for a reverse shell: the other side is an SSH client, so `exec` channels can't be opened.
+    public let canExec: Bool
 
-    private init(group: MultiThreadedEventLoopGroup, connection: Channel, child: Channel, reader: ChunkReader) {
+    private init(group: MultiThreadedEventLoopGroup, connection: Channel, child: Channel, reader: ChunkReader,
+                 canExec: Bool = true) {
         self.group = group
         self.connection = connection
         self.child = child
         self.reader = reader
+        self.canExec = canExec
     }
 
     /// `key` is loaded only once the server is reachable and trusted and asks for auth,
@@ -83,6 +94,59 @@ public final class SSHTunnel: ByteTransport, @unchecked Sendable {
         return tunnel
     }
 
+    /// Reverse: this device is the SSH server and the other machine's own `ssh` client connects to it,
+    /// authenticating with `clientKey`. Its session carries that machine's shell (see `ReverseSSH`).
+    public static func acceptShell(
+        port: Int, hostKey: NIOSSHPrivateKey, clientKey: String,
+        onStatus: @escaping @Sendable (SSHTunnelStatus) -> Void = { _ in }
+    ) async throws -> SSHTunnel {
+        guard let allowed = try? NIOSSHPublicKey(openSSHPublicKey: clientKey.trimmingCharacters(in: .whitespacesAndNewlines))
+        else { throw SSHTunnelError.badClientKey }
+        let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
+        let state = FailureState()
+        let auth = ClientKeyDelegate(allowed: allowed, state: state)
+        let shell = OneShot<Channel>(group.next())
+        let (stream, continuation) = AsyncThrowingStream<[UInt8], Error>.makeStream()
+        let initialize: @Sendable (Channel) -> EventLoopFuture<Void> = { channel in
+            channel.eventLoop.makeCompletedFuture {
+                let ssh = NIOSSHHandler(
+                    role: .server(.init(hostKeys: [hostKey], userAuthDelegate: auth)),
+                    allocator: channel.allocator,
+                    inboundChildChannelInitializer: { child, type in
+                        guard case .session = type else { return child.eventLoop.makeFailedFuture(ChannelError.operationUnsupported) }
+                        return child.eventLoop.makeCompletedFuture {
+                            try child.pipeline.syncOperations.addHandler(ShellRequestHandler(shell: shell))
+                            try child.pipeline.syncOperations.addHandler(TunnelDataHandler(continuation: continuation))
+                        }
+                    })
+                try channel.pipeline.syncOperations.addHandler(ssh)
+                try channel.pipeline.syncOperations.addHandler(ErrorRecorder(state: state))
+            }
+        }
+
+        let connection: Channel
+        do {
+            connection = try await accept(group, port: port, initialize, onStatus)
+        } catch {
+            shell.fail(error)
+            try? await group.shutdownGracefully()
+            throw error is CancellationError ? error : SSHTunnelError.unreachable(describe(error))
+        }
+        connection.closeFuture.whenComplete { _ in shell.fail(state.error ?? SSHTunnelError.closedBeforeShell) }
+        do {
+            let child = try await withTaskCancellationHandler {
+                try await shell.future.get()
+            } onCancel: {
+                shell.fail(CancellationError())
+            }
+            return SSHTunnel(group: group, connection: connection, child: child, reader: ChunkReader(stream), canExec: false)
+        } catch {
+            try? await connection.close()
+            try? await group.shutdownGracefully()
+            throw error
+        }
+    }
+
     private static func open(
         _ endpoint: SSHEndpoint, key: @escaping KeyProvider, verifyHostKey: @escaping HostKeyVerifier,
         channel channelType: SSHChannelType, onStatus: @escaping @Sendable (SSHTunnelStatus) -> Void
@@ -92,21 +156,22 @@ public final class SSHTunnel: ByteTransport, @unchecked Sendable {
         let userAuth = KeyAuthDelegate(username: endpoint.username, key: key, state: state, onStatus: onStatus)
         let serverAuth = HostKeyDelegate(verify: verifyHostKey, state: state)
 
-        let bootstrap = ClientBootstrap(group: group)
-            .connectTimeout(.seconds(10))
-            .channelInitializer { channel in
-                channel.eventLoop.makeCompletedFuture {
-                    let ssh = NIOSSHHandler(
-                        role: .client(.init(userAuthDelegate: userAuth, serverAuthDelegate: serverAuth)),
-                        allocator: channel.allocator, inboundChildChannelInitializer: nil)
-                    try channel.pipeline.syncOperations.addHandler(ssh)
-                    try channel.pipeline.syncOperations.addHandler(ErrorRecorder(state: state))
-                }
+        let initialize: @Sendable (Channel) -> EventLoopFuture<Void> = { channel in
+            channel.eventLoop.makeCompletedFuture {
+                let ssh = NIOSSHHandler(
+                    role: .client(.init(userAuthDelegate: userAuth, serverAuthDelegate: serverAuth)),
+                    allocator: channel.allocator, inboundChildChannelInitializer: nil)
+                try channel.pipeline.syncOperations.addHandler(ssh)
+                try channel.pipeline.syncOperations.addHandler(ErrorRecorder(state: state))
             }
-            .channelOption(ChannelOptions.socket(SocketOptionLevel(IPPROTO_TCP), TCP_NODELAY), value: 1)
+        }
 
         let connection: Channel
         do {
+            let bootstrap = ClientBootstrap(group: group)
+                .connectTimeout(.seconds(10))
+                .channelInitializer(initialize)
+                .channelOption(ChannelOptions.socket(SocketOptionLevel(IPPROTO_TCP), TCP_NODELAY), value: 1)
             connection = try await connect(bootstrap, endpoint, onStatus)
         } catch {
             try? await group.shutdownGracefully()
@@ -154,6 +219,37 @@ public final class SSHTunnel: ByteTransport, @unchecked Sendable {
                 onStatus(.waitingForNetwork)
                 try await Task.sleep(for: .seconds(1))
             }
+        }
+    }
+
+    /// Listens until the server connects; the first connection is used and the listener closed.
+    private static func accept(
+        _ group: EventLoopGroup, port: Int, _ initialize: @escaping @Sendable (Channel) -> EventLoopFuture<Void>,
+        _ onStatus: @Sendable (SSHTunnelStatus) -> Void
+    ) async throws -> Channel {
+        let accepted = group.next().makePromise(of: Channel.self)
+        let first = Latch()
+        let listener = try await ServerBootstrap(group: group)
+            .serverChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
+            .childChannelOption(ChannelOptions.socket(SocketOptionLevel(IPPROTO_TCP), TCP_NODELAY), value: 1)
+            .childChannelInitializer { child in
+                guard first.claim() else { return child.eventLoop.makeFailedFuture(ChannelError.alreadyClosed) }
+                let ready = initialize(child)
+                ready.whenComplete { result in
+                    switch result {
+                    case .success: accepted.succeed(child)
+                    case .failure(let error): accepted.fail(error)
+                    }
+                }
+                return ready
+            }
+            .bind(host: "0.0.0.0", port: port).get()
+        defer { listener.close(promise: nil) }
+        onStatus(.waitingForServer)
+        return try await withTaskCancellationHandler {
+            try await accepted.futureResult.get()
+        } onCancel: {
+            if first.claim() { accepted.fail(CancellationError()) }
         }
     }
 
@@ -218,6 +314,68 @@ final class FailureState: @unchecked Sendable {
     private var first: Error?
     var error: Error? { lock.withLock { first } }
     func record(_ e: Error) { lock.withLock { if first == nil { first = e } } }
+}
+
+/// A promise that may be completed from several places; only the first completion counts.
+final class OneShot<Value: Sendable>: @unchecked Sendable {
+    private let promise: EventLoopPromise<Value>
+    private let first = Latch()
+    var future: EventLoopFuture<Value> { promise.futureResult }
+
+    init(_ loop: EventLoop) { promise = loop.makePromise() }
+    func succeed(_ value: Value) { if first.claim() { promise.succeed(value) } }
+    func fail(_ error: Error) { if first.claim() { promise.fail(error) } }
+}
+
+/// Lets in only the client key saved for the host. NIO SSH has already checked the signature.
+final class ClientKeyDelegate: NIOSSHServerUserAuthenticationDelegate, @unchecked Sendable {
+    let allowed: NIOSSHPublicKey
+    let state: FailureState
+    let supportedAuthenticationMethods: NIOSSHAvailableUserAuthenticationMethods = .publicKey
+
+    init(allowed: NIOSSHPublicKey, state: FailureState) {
+        self.allowed = allowed
+        self.state = state
+    }
+
+    func requestReceived(request: NIOSSHUserAuthenticationRequest,
+                         responsePromise: EventLoopPromise<NIOSSHUserAuthenticationOutcome>) {
+        guard case .publicKey(let offer) = request.request else { return responsePromise.succeed(.failure) }
+        if offer.publicKey == allowed { return responsePromise.succeed(.success) }
+        state.record(SSHTunnelError.clientKeyRejected)
+        responsePromise.succeed(.failure)
+    }
+}
+
+/// Accepts the client's session requests; its shell request marks the session ready.
+final class ShellRequestHandler: ChannelInboundHandler {
+    typealias InboundIn = SSHChannelData
+    typealias InboundOut = SSHChannelData
+    let shell: OneShot<Channel>
+
+    init(shell: OneShot<Channel>) { self.shell = shell }
+
+    func userInboundEventTriggered(context: ChannelHandlerContext, event: Any) {
+        let wantReply: Bool
+        switch event {
+        case let e as SSHChannelRequestEvent.ShellRequest: wantReply = e.wantReply
+        case let e as SSHChannelRequestEvent.ExecRequest: wantReply = e.wantReply
+        case let e as SSHChannelRequestEvent.PseudoTerminalRequest: wantReply = e.wantReply
+        case let e as SSHChannelRequestEvent.EnvironmentRequest: wantReply = e.wantReply
+        default: return context.fireUserInboundEventTriggered(event)
+        }
+        if wantReply { context.triggerUserOutboundEvent(ChannelSuccessEvent(), promise: nil) }
+        if event is SSHChannelRequestEvent.ShellRequest || event is SSHChannelRequestEvent.ExecRequest {
+            shell.succeed(context.channel)
+        }
+    }
+}
+
+/// True for the first caller only.
+final class Latch: @unchecked Sendable {
+    private let lock = NSLock()
+    private var taken = false
+    func claim() -> Bool { lock.withLock { defer { taken = true }; return !taken } }
 }
 
 final class KeyAuthDelegate: NIOSSHClientUserAuthenticationDelegate, @unchecked Sendable {
