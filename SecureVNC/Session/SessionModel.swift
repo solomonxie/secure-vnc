@@ -32,6 +32,7 @@ final class SessionModel: ObservableObject {
     private var trustReply: CheckedContinuation<Bool, Never>?
     private var generation = 0
     private var inBackground = false
+    private var backgroundedAt = Date.distantPast
     private var backgroundTask = UIBackgroundTaskIdentifier.invalid
     /// A drop noticed in the background or just after returning reconnects silently.
     private var quietReconnectUntil: Date?
@@ -73,6 +74,7 @@ final class SessionModel: ObservableObject {
     /// iOS gives a few seconds to finish work before suspending; a dead link is mended on return.
     func enterBackground() {
         inBackground = true
+        backgroundedAt = Date()
         guard backgroundTask == .invalid else { return }
         backgroundTask = UIApplication.shared.beginBackgroundTask { [weak self] in self?.endBackgroundTask() }
     }
@@ -81,7 +83,12 @@ final class SessionModel: ObservableObject {
         guard inBackground else { return }
         inBackground = false
         endBackgroundTask()
-        if case .failed = phase, quietReconnectUntil != nil, let store {
+        // The server's ssh gives up on a suspended phone within ~15s and keeps retrying, so after a longer
+        // trip listen again at once rather than wait for the stale link to fail.
+        if host.reverse, Date().timeIntervalSince(backgroundedAt) > 8, let store {
+            quietReconnectUntil = nil
+            connect(store: store)
+        } else if case .failed = phase, quietReconnectUntil != nil, let store {
             quietReconnectUntil = nil
             connect(store: store)
         } else {

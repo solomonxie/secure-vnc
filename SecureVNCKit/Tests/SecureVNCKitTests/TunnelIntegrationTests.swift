@@ -209,6 +209,8 @@ final class TunnelIntegrationTests: XCTestCase {
     func startReverse(port: Int, identity: String) throws -> Process {
         let command = ReverseSSH.serverCommand(phone: "127.0.0.1", port: port)
             .replacingOccurrences(of: "/tmp/f", with: dir.appendingPathComponent("fifo").path)
+            .replacingOccurrences(of: "; ssh", with: "; while :; do ssh")
+            .appending("; sleep 1; done")
             .replacingOccurrences(of: "ssh ", with: "ssh -i \(identity) -oIdentitiesOnly=yes -oIdentityAgent=none"
                 + " -oStrictHostKeyChecking=no -oUserKnownHostsFile=/dev/null ")
         let p = Process()
@@ -237,9 +239,10 @@ final class TunnelIntegrationTests: XCTestCase {
         let store = SSHKeyStore(secrets: MemorySecretStore())
         let phone = try store.generate(name: "phone", kind: .ed25519, requireUserPresence: false)
         let hostKey = NIOSSHPrivateKey(ed25519Key: .init())
+        let mac = try startReverse(port: 2299, identity: client.path)
+        defer { stop(mac) }
+        // Run in a retry loop, it reconnects by itself after each disconnect.
         for round in 1...2 {
-            let mac = try startReverse(port: 2299, identity: client.path)
-            defer { stop(mac) }
             let shell = try await SSHTunnel.acceptReverse(
                 port: 2299, hostKey: hostKey, clientKey: client.publicKey, phoneKey: phone.publicKey, key: { try store.privateKey(for: phone) })
             shell.send(Array("echo reversed-$((\(round)+1)); tty\r".utf8))

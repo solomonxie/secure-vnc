@@ -7,12 +7,13 @@ public enum ReverseSSH {
 
     /// Typed into that shell: an sshd on a random localhost port, as that user, authorizing only `phoneKey`; then
     /// the shell's pty goes raw and becomes a pipe to it. sshd reloads on SIGHUP, so a watcher stops it once the
-    /// shell is gone.
+    /// shell is gone. Its keepalives also end the shell soon after the phone's ssh is gone, freeing the retry loop.
     static func bootstrap(phoneKey: String) -> String {
         let key = phoneKey.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: "'", with: "")
         let options = [
             "ListenAddress=127.0.0.1", "Port=$P", "AuthorizedKeysFile=$d/a", "PidFile=none", "UsePAM=no",
             "StrictModes=no", "PasswordAuthentication=no", "KbdInteractiveAuthentication=no",
+            "ClientAliveInterval=2", "ClientAliveCountMax=3",
         ].map { "-o \($0)" }.joined(separator: " ")
         return " d=$(mktemp -d); P=$((RANDOM%20000+40000)); ssh-keygen -q -t ed25519 -N '' -f $d/h; echo '\(key)' >$d/a;"
             + " /usr/sbin/sshd -D -f /dev/null -h $d/h \(options) 2>/dev/null & s=$!;"
