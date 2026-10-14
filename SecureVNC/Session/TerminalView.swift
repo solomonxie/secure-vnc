@@ -444,9 +444,9 @@ struct TerminalView: View {
             .font(.system(.body, design: .monospaced))
             .textInputAutocapitalization(.never)
             .autocorrectionDisabled()
-            .submitLabel(.done)
+            .submitLabel(.send)
             .focused($focused)
-            .onSubmit { focused = false }
+            .onSubmit(submit)
             .onChange(of: command) { _, text in
                 guard keyMode, !text.isEmpty else { return }
                 terminal.sendText(text)
@@ -456,7 +456,10 @@ struct TerminalView: View {
                 .disabled(terminal.history.isEmpty).accessibilityLabel("Previous command")
             Button { step(1) } label: { Image(systemName: "chevron.down") }
                 .disabled(recall == nil).accessibilityLabel("Next command")
-            Button("Send", action: submit).buttonStyle(.borderedProminent).controlSize(.small)
+            if focused {
+                Button { focused = false } label: { Image(systemName: "keyboard.chevron.compact.down") }
+                    .accessibilityLabel("Hide keyboard")
+            }
         }
         .foregroundStyle(.white)
         .padding(.horizontal, 14).padding(.vertical, 10)
