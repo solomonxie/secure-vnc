@@ -29,13 +29,7 @@ struct HostEditorView: View {
                     }
                     .pickerStyle(.segmented)
                 }
-                Section("SSH") {
-                    field("192.168.1.20 or mac.local", text: $host.sshHost)
-                    field("Port", text: $sshPort).keyboardType(.numberPad)
-                    field("User", text: $host.username)
-                    keyRow
-                    if keyPickerOpen { keyOptions }
-                }
+                if host.reverse { reverseSection } else { sshSection }
                 if host.type == .vnc { vncSection }
             }
             .navigationTitle(isNew ? "New Host" : "Edit Host")
@@ -49,12 +43,40 @@ struct HostEditorView: View {
             .sheet(isPresented: $creatingKey) {
                 NewKeyView { host.keyID = $0.id; keyPickerOpen = false }
             }
+            .onChange(of: host.reverse) { _, on in
+                if on, sshPort == "22" { sshPort = "2222" }
+                if !on, sshPort == "2222" { sshPort = "22" }
+            }
             .onAppear {
                 sshPort = String(host.sshPort)
                 vncPort = String(host.vncPort)
                 if !isNew { password = store.password(for: host.id) }
                 if host.keyID == nil { host.keyID = store.keys.first?.id }
             }
+        }
+    }
+
+    private var sshSection: some View {
+        Section("SSH") {
+            field("192.168.1.20 or mac.local", text: $host.sshHost)
+            field("Port", text: $sshPort).keyboardType(.numberPad)
+            field("User", text: $host.username)
+            keyRow
+            if keyPickerOpen { keyOptions }
+        }
+    }
+
+    private var reverseSection: some View {
+        Section {
+            field("Listen port", text: $sshPort).keyboardType(.numberPad)
+            TextField("Server's public key: ssh-ed25519 AAAA…", text: $host.serverPublicKey, axis: .vertical)
+                .font(.caption.monospaced())
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+        } header: {
+            Text("Reverse SSH")
+        } footer: {
+            Text("For a server that can't accept connections. Paste its public key: `cat ~/.ssh/id_ed25519.pub` there. On the same Wi-Fi, this app listens while open and the server's own ssh connects in with that key, using a command shown when you connect. Nothing is installed on the server.")
         }
     }
 
@@ -144,10 +166,11 @@ struct HostEditorView: View {
         h.username = h.username.trimmed
         h.vncHost = h.vncHost.trimmed
         h.macUser = h.macUser.trimmed
-        if let old = store.host(h.id), old.sshHost != h.sshHost || old.sshPort != h.sshPort {
+        h.serverPublicKey = h.serverPublicKey.trimmed
+        if let old = store.host(h.id), old.sshHost != h.sshHost || (!h.reverse && old.sshPort != h.sshPort) {
             h.hostKeyFingerprint = nil
         }
-        store.save(h, password: h.type == .terminal || h.auth == .none ? "" : password)
+        store.save(h, password: h.type != .vnc || h.auth == .none ? "" : password)
         dismiss()
     }
 }

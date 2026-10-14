@@ -110,6 +110,32 @@ struct SessionView: View {
         }
     }
 
+    private func reverseHelp(_ command: String, fingerprint: String) -> some View {
+        VStack(spacing: 12) {
+            Text("Run this on the server, on the same Wi-Fi. The first time, ssh asks to trust this iPhone; check it shows \(fingerprint). After disconnecting, press Ctrl-C there.")
+                .font(.footnote).multilineTextAlignment(.center).foregroundStyle(.white.opacity(0.7))
+                .textSelection(.enabled)
+            ScrollView {
+                Text(command)
+                    .font(.caption2.monospaced()).foregroundStyle(.white)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(10)
+            }
+            .frame(maxHeight: 140)
+            .background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+            HStack(spacing: 16) {
+                Button(copied ? "Copied" : "Copy") {
+                    UIPasteboard.general.string = command
+                    copied = true
+                }
+                ShareLink("Share", item: command)
+            }
+            .buttonStyle(.bordered).tint(.white)
+        }
+        .padding(.horizontal, 24)
+    }
+
     private var statusView: some View {
         VStack(spacing: 18) {
             Spacer()
@@ -117,6 +143,9 @@ struct SessionView: View {
             case .connecting(let text):
                 ProgressView().controlSize(.large).tint(.white)
                 Text(text).foregroundStyle(.white.opacity(0.85))
+                if model.host.reverse, let command = model.reverseCommand {
+                    reverseHelp(command, fingerprint: model.reverseFingerprint ?? "")
+                }
                 Button("Cancel") { dismiss() }.foregroundStyle(.white.opacity(0.7))
             case .failed(let text, let keyRejected):
                 Image(systemName: "exclamationmark.triangle.fill").font(.largeTitle).foregroundStyle(.yellow)

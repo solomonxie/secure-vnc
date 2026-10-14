@@ -13,10 +13,23 @@ enum VNCAuthKind: String, Codable, CaseIterable {
 }
 
 enum ConnectionType: String, Codable, CaseIterable {
-    case vnc, terminal
+    /// `reverse`: a terminal where the server connects out to this phone, for a server that can't accept connections.
+    case vnc, terminal, reverse
 
-    var label: String { self == .vnc ? "Screen" : "Terminal" }
-    var symbol: String { self == .vnc ? "desktopcomputer" : "terminal" }
+    var label: String {
+        switch self {
+        case .vnc: "Screen"
+        case .terminal: "Terminal"
+        case .reverse: "Reverse"
+        }
+    }
+    var symbol: String {
+        switch self {
+        case .vnc: "desktopcomputer"
+        case .terminal: "terminal"
+        case .reverse: "arrow.uturn.backward"
+        }
+    }
 }
 
 struct Host: Codable, Identifiable, Hashable {
@@ -30,6 +43,14 @@ struct Host: Codable, Identifiable, Hashable {
     }
     var sshHost = ""
     var sshPort = 22
+    /// `sshPort` is then this phone's listen port.
+    var reverse: Bool { type == .reverse }
+    private var reverseClientKey: String?
+    /// Reverse: the OpenSSH public key the server's own ssh client connects with.
+    var serverPublicKey: String {
+        get { reverseClientKey ?? "" }
+        set { reverseClientKey = newValue }
+    }
     var username = ""
     var keyID: UUID?
     var vncHost = "localhost"
@@ -40,11 +61,12 @@ struct Host: Codable, Identifiable, Hashable {
     var hostKeyFingerprint: String?
 
     var subtitle: String {
-        "\(username)@\(sshHost)\(sshPort == 22 ? "" : ":\(sshPort)")" + (type == .vnc ? " → :\(vncPort)" : "")
+        (reverse ? "reverse · listens on :\(sshPort)" : "\(username)@\(sshHost)\(sshPort == 22 ? "" : ":\(sshPort)")") + (type == .vnc ? " → :\(vncPort)" : "")
     }
     var isComplete: Bool {
-        !name.trimmed.isEmpty && !sshHost.trimmed.isEmpty && !username.trimmed.isEmpty && keyID != nil
-            && (type == .terminal || !vncHost.trimmed.isEmpty)
+        if reverse { return !name.trimmed.isEmpty && !serverPublicKey.trimmed.isEmpty }
+        return !name.trimmed.isEmpty && !sshHost.trimmed.isEmpty && !username.trimmed.isEmpty && keyID != nil
+            && (type != .vnc || !vncHost.trimmed.isEmpty)
     }
 }
 

@@ -18,6 +18,7 @@ but without a local port: VNC runs inside an SSH `direct-tcpip` channel in-proce
 - Talk to a running **Claude Code** session: pick it by name (from `~/.claude/sessions`); its transcript `.jsonl` is shown as clean prompt / reply / tool lines instead of the TUI, messages are typed into its tmux pane, esc interrupts, and a screen peek shows permission prompts.
 - File browser from the terminal's current folder: browse, view/edit text, copy/cut/paste, rename, delete, new folder, cd there — plain `sh` over the same SSH connection, no SFTP needed.
 - Sessions survive a quick trip to another app; a link iOS dropped reconnects on return.
+- **Reverse** terminal hosts, for a server that can't accept connections: on the same Wi-Fi the app is a small SSH server while open, and the server's own `ssh` connects in with its key (pasted into the app): `mkfifo /tmp/f; ssh -p2222 <iphone> </tmp/f | script -q /dev/null zsh -l >/tmp/f`. Nothing installed there; plain terminal only (no files, tmux or Claude modes).
 - Trackpad or direct-touch control, pinch zoom, two-finger scroll/right click, keyboard with esc/tab/⌃⌥⌘/arrows bar, hardware keyboard.
 - No third-party services; dependencies: [swift-nio-ssh](https://github.com/apple/swift-nio-ssh), [BigInt](https://github.com/attaswift/BigInt).
 

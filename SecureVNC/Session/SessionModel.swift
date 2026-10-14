@@ -40,12 +40,22 @@ final class SessionModel: ObservableObject {
 
     var installCommand: String { store?.key(host.keyID)?.installCommand ?? "" }
 
+    /// What the server runs to connect to this iPhone; nil off Wi-Fi.
+    var reverseCommand: String? {
+        Network.wifiAddress.map { ReverseSSH.serverCommand(phone: $0, port: host.sshPort) }
+    }
+
+    /// What the server's ssh shows when asked to trust this iPhone the first time.
+    var reverseFingerprint: String? {
+        (try? store?.keyStore.reverseHostKey()).map { SSHFingerprint.of($0.publicKey) }
+    }
+
     func connect(store: AppStore) {
         self.store = store
         disconnect()
         generation += 1
         let gen = generation
-        phase = .connecting("Connecting to \(host.sshHost)…")
+        phase = .connecting(host.reverse ? "Opening port \(host.sshPort)…" : "Connecting to \(host.sshHost)…")
         task = Task { await run(gen) }
     }
 
@@ -94,7 +104,21 @@ final class SessionModel: ObservableObject {
     private func run(_ gen: Int) async {
         guard let store else { return }
         let host = store.host(self.host.id) ?? self.host
+        let onStatus: @Sendable (SSHTunnelStatus) -> Void = { [weak self] status in
+            let text = switch status {
+            case .waitingForNetwork: "Waiting for local network access…"
+            case .waitingForServer: "Waiting for the server to connect…"
+            case .authenticating: "Authenticating as \(host.username)…"
+            }
+            Task { @MainActor in self?.status(text, gen) }
+        }
         do {
+            if host.reverse {
+                guard Network.wifiAddress != nil else { throw Failure("Join the server's Wi-Fi so it can connect to this iPhone.") }
+                let tunnel = try await SSHTunnel.acceptShell(
+                    port: host.sshPort, hostKey: store.keyStore.reverseHostKey(), clientKey: host.serverPublicKey, onStatus: onStatus)
+                return try await runTerminal(tunnel, gen)
+            }
             guard let keyInfo = store.key(host.keyID) else {
                 throw Failure("This host's key was deleted. Edit the host and pick another.")
             }
@@ -124,23 +148,9 @@ final class SessionModel: ObservableObject {
                     await store.trust(got, for: host.id)
                 }
             }
-            let onStatus: @Sendable (SSHTunnelStatus) -> Void = { [weak self] status in
-                let text = switch status {
-                case .waitingForNetwork: "Waiting for local network access…"
-                case .authenticating: "Authenticating as \(host.username)…"
-                }
-                Task { @MainActor in self?.status(text, gen) }
-            }
 
             if host.type == .terminal {
-                let tunnel = try await SSHTunnel.openShell(endpoint, key: key, verifyHostKey: verify, onStatus: onStatus)
-                guard gen == generation else { return tunnel.close() }
-                self.tunnel = tunnel
-                let terminal = self.terminal ?? Terminal()
-                terminal.attach(tunnel)
-                self.terminal = terminal
-                phase = .live
-                return try await terminal.run()
+                return try await runTerminal(SSHTunnel.openShell(endpoint, key: key, verifyHostKey: verify, onStatus: onStatus), gen)
             }
 
             let tunnel = try await SSHTunnel.open(
@@ -173,6 +183,16 @@ final class SessionModel: ObservableObject {
                 terminal?.note(message(error))
             }
         }
+    }
+
+    private func runTerminal(_ tunnel: SSHTunnel, _ gen: Int) async throws {
+        guard gen == generation else { return tunnel.close() }
+        self.tunnel = tunnel
+        let terminal = self.terminal ?? Terminal()
+        terminal.attach(tunnel)
+        self.terminal = terminal
+        phase = .live
+        try await terminal.run()
     }
 
     private func status(_ text: String, _ gen: Int) {
@@ -265,6 +285,8 @@ final class SessionModel: ObservableObject {
             "Key not accepted by \(host.username)@\(host.sshHost). Add its public key to ~/.ssh/authorized_keys there."
         case let e as LAError where e.code == .userCancel || e.code == .appCancel || e.code == .systemCancel:
             "Unlock cancelled."
+        case SSHTunnelError.unreachable(let why) where host.reverse:
+            "Couldn't listen on port \(host.sshPort): \(why)"
         case SSHTunnelError.unreachable:
             error.localizedDescription + Network.hint(for: host.sshHost)
         case TransportError.closed:
@@ -302,6 +324,22 @@ enum Network {
         let path = monitor.currentPath
         return isLAN(host) && path.status != .requiresConnection && !path.availableInterfaces.isEmpty
             && !path.usesInterfaceType(.wifi) && !path.usesInterfaceType(.wiredEthernet)
+    }
+
+    /// This iPhone's IPv4 address on Wi-Fi.
+    static var wifiAddress: String? {
+        var list: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&list) == 0, let first = list else { return nil }
+        defer { freeifaddrs(list) }
+        for entry in sequence(first: first, next: { $0.pointee.ifa_next }) {
+            guard String(cString: entry.pointee.ifa_name) == "en0", let addr = entry.pointee.ifa_addr,
+                  addr.pointee.sa_family == UInt8(AF_INET) else { continue }
+            var name = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+            guard getnameinfo(addr, socklen_t(addr.pointee.sa_len), &name, socklen_t(name.count), nil, 0, NI_NUMERICHOST) == 0
+            else { continue }
+            return String(cString: name)
+        }
+        return nil
     }
 
     static func hint(for host: String) -> String {
