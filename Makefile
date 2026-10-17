@@ -1,7 +1,7 @@
 # Device signing: DEVELOPMENT_TEAM + APP_BUNDLE_ID in Config/Local.xcconfig (copy the .example).
 # DEVICE_UDID defaults to the first connected iPhone.
 SCHEME  := SecureVNC
-DERIVED := build/install
+DERIVED := /tmp/securevnc-build/install
 APP     := SecureVNC.app
 APP_ID  := $(shell sed -n 's/^APP_BUNDLE_ID *= *//p' Config/Local.xcconfig)
 DEVICE_UDID ?= $(shell xcrun devicectl list devices 2>/dev/null | awk '/physical/ && /available|connected/ {print $$3; exit}')
@@ -27,7 +27,7 @@ device: project
 
 check: project
 	xcodebuild -scheme $(SCHEME) -configuration Release -destination 'generic/platform=iOS' \
-		-derivedDataPath build/check -allowProvisioningUpdates -quiet build
+		-derivedDataPath /tmp/securevnc-build/check -allowProvisioningUpdates -quiet build
 	@echo "Release build OK"
 
 test:
