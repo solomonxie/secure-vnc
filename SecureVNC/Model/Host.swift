@@ -14,13 +14,17 @@ enum VNCAuthKind: String, Codable, CaseIterable {
 
 enum ConnectionType: String, Codable, CaseIterable {
     /// `reverse`: a terminal where the server connects out to this phone, for a server that can't accept connections.
-    case vnc, terminal, reverse
+    /// `local`: this iPhone's own built-in shell and files.
+    case vnc, terminal, reverse, local
+
+    static let editable: [ConnectionType] = [.vnc, .terminal, .reverse]
 
     var label: String {
         switch self {
         case .vnc: "Screen"
         case .terminal: "Terminal"
         case .reverse: "Reverse"
+        case .local: "This iPhone"
         }
     }
     var symbol: String {
@@ -28,6 +32,7 @@ enum ConnectionType: String, Codable, CaseIterable {
         case .vnc: "desktopcomputer"
         case .terminal: "terminal"
         case .reverse: "arrow.uturn.backward"
+        case .local: "iphone"
         }
     }
 }
@@ -61,13 +66,25 @@ struct Host: Codable, Identifiable, Hashable {
     var hostKeyFingerprint: String?
 
     var subtitle: String {
-        (reverse ? "reverse · listens on :\(sshPort)" : "\(username)@\(sshHost)\(sshPort == 22 ? "" : ":\(sshPort)")") + (type == .vnc ? " → :\(vncPort)" : "")
+        if type == .local { return "Shell · files · USB drives" }
+        return (reverse ? "reverse · listens on :\(sshPort)" : "\(username)@\(sshHost)\(sshPort == 22 ? "" : ":\(sshPort)")") + (type == .vnc ? " → :\(vncPort)" : "")
     }
     var isComplete: Bool {
+        if type == .local { return true }
         if reverse { return !name.trimmed.isEmpty && !serverPublicKey.trimmed.isEmpty && keyID != nil }
         return !name.trimmed.isEmpty && !sshHost.trimmed.isEmpty && !username.trimmed.isEmpty && keyID != nil
             && (type != .vnc || !vncHost.trimmed.isEmpty)
     }
+}
+
+extension Host {
+    static let thisPhone: Host = {
+        var host = Host()
+        host.id = UUID(uuidString: "00000000-0000-0000-0000-0000000000A1")!
+        host.name = "This iPhone"
+        host.type = .local
+        return host
+    }()
 }
 
 extension String {

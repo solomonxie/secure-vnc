@@ -25,7 +25,7 @@ struct HostEditorView: View {
                 Section("Name") {
                     field("Studio Mac", text: $host.name)
                     Picker("Type", selection: $host.type) {
-                        ForEach(ConnectionType.allCases, id: \.self) { Label($0.label, systemImage: $0.symbol) }
+                        ForEach(ConnectionType.editable, id: \.self) { Label($0.label, systemImage: $0.symbol) }
                     }
                     .pickerStyle(.segmented)
                 }

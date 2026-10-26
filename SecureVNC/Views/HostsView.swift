@@ -8,17 +8,15 @@ struct HostsView: View {
 
     var body: some View {
         NavigationStack {
-            Group {
-                if store.hosts.isEmpty {
-                    ContentUnavailableView {
-                        Label("No hosts yet", systemImage: "desktopcomputer")
-                    } description: {
-                        Text("Add your Mac to connect over SSH.")
-                    } actions: {
-                        Button("Add host") { editing = Host() }.buttonStyle(.borderedProminent)
+            List {
+                Section {
+                    Button { connecting = .thisPhone } label: { row(.thisPhone) }
+                }
+                Section("Hosts") {
+                    if store.hosts.isEmpty {
+                        Button("Add your Mac to connect over SSH", systemImage: "plus") { editing = Host() }
                     }
-                } else {
-                    List(store.hosts) { host in
+                    ForEach(store.hosts) { host in
                         Button { connecting = host } label: { row(host) }
                             .swipeActions {
                                 Button("Delete", role: .destructive) { pendingDelete = host }
@@ -56,9 +54,10 @@ struct HostsView: View {
         HStack(spacing: 12) {
             Image(systemName: host.type.symbol)
                 .font(.title3.weight(.medium))
-                .foregroundStyle(host.type == .vnc ? Color.white : Color.green)
+                .foregroundStyle(host.type == .vnc || host.type == .local ? Color.white : Color.green)
                 .frame(width: 40, height: 40)
-                .background(host.type == .vnc ? Color.accentColor : Color(white: 0.12), in: RoundedRectangle(cornerRadius: 9))
+                .background(host.type == .vnc ? Color.accentColor : host.type == .local ? Color.indigo : Color(white: 0.12),
+                            in: RoundedRectangle(cornerRadius: 9))
             VStack(alignment: .leading, spacing: 2) {
                 Text(host.name).font(.headline).foregroundStyle(.primary)
                 Text(host.subtitle).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)

@@ -28,6 +28,7 @@ final class SessionModel: ObservableObject {
     let host: Host
     private var store: AppStore?
     private var tunnel: SSHTunnel?
+    private var shell: (any ShellChannel)?
     private var task: Task<Void, Never>?
     private var trustReply: CheckedContinuation<Bool, Never>?
     private var generation = 0
@@ -56,7 +57,7 @@ final class SessionModel: ObservableObject {
         disconnect()
         generation += 1
         let gen = generation
-        phase = .connecting(host.reverse ? "Opening port \(host.sshPort)…" : "Connecting to \(host.sshHost)…")
+        phase = .connecting(host.type == .local ? "Starting…" : host.reverse ? "Opening port \(host.sshPort)…" : "Connecting to \(host.sshHost)…")
         task = Task { await run(gen) }
     }
 
@@ -65,6 +66,8 @@ final class SessionModel: ObservableObject {
         task = nil
         tunnel?.close()
         tunnel = nil
+        shell?.close()
+        shell = nil
         client = nil
         terminal?.detach()
         answerTrust(false)
@@ -120,6 +123,7 @@ final class SessionModel: ObservableObject {
             Task { @MainActor in self?.status(text, gen) }
         }
         do {
+            if host.type == .local { return try await runTerminal(LocalShell(files: store.places.files), gen) }
             guard let keyInfo = store.key(host.keyID) else {
                 throw Failure("This host's key was deleted. Edit the host and pick another.")
             }
@@ -194,11 +198,11 @@ final class SessionModel: ObservableObject {
         }
     }
 
-    private func runTerminal(_ tunnel: SSHTunnel, _ gen: Int) async throws {
-        guard gen == generation else { return tunnel.close() }
-        self.tunnel = tunnel
+    private func runTerminal(_ shell: any ShellChannel, _ gen: Int) async throws {
+        guard gen == generation else { return shell.close() }
+        self.shell = shell
         let terminal = self.terminal ?? Terminal()
-        terminal.attach(tunnel)
+        terminal.attach(shell)
         self.terminal = terminal
         phase = .live
         try await terminal.run()

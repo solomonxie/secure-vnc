@@ -26,31 +26,41 @@ final class Terminal: ObservableObject {
     /// A prompt typed here and shown at once, until the transcript records it.
     private var pendingPrompt: String?
     private var mirrorTask: Task<Void, Never>?
-    private var tunnel: SSHTunnel?
+    private var channel: (any ShellChannel)?
     private var pending: [UInt8] = []
     private var carriageReturn = false
     private var size = (columns: 0, rows: 0)
     private static let maxOutput = 60_000
 
     /// Output survives reconnects; each new shell gets a divider.
-    func attach(_ tunnel: SSHTunnel) {
+    func attach(_ channel: any ShellChannel) {
         if !output.isEmpty { append("\n──── reconnected ────\n") }
-        self.tunnel = tunnel
+        self.channel = channel
         pending = []
         carriageReturn = false
-        if size.columns > 0 { tunnel.resize(columns: size.columns, rows: size.rows) }
+        local?.onOpen = { [weak self] path in Task { @MainActor in self?.open(path) } }
+        if size.columns > 0 { channel.resize(columns: size.columns, rows: size.rows) }
         if pane != nil { pollPane() }
         if claude != nil { pollClaude() }
     }
 
     func detach() {
-        tunnel = nil
+        channel = nil
         mirrorTask?.cancel()
     }
 
-    var files: RemoteFiles? { tunnel.map(RemoteFiles.init) }
-    var panes: RemotePanes? { tunnel.map { RemotePanes(tunnel: $0) } }
-    var claudeSessions: ClaudeSessions? { tunnel.map(ClaudeSessions.init) }
+    private var ssh: SSHTunnel? { channel as? SSHTunnel }
+    /// This iPhone's built-in shell, rather than a server's.
+    var local: LocalShell? { channel as? LocalShell }
+    var files: (any FileSystem)? { local?.files ?? ssh.map(RemoteFiles.init) }
+    var panes: RemotePanes? { ssh.map { RemotePanes(tunnel: $0) } }
+    var claudeSessions: ClaudeSessions? { ssh.map(ClaudeSessions.init) }
+
+    /// `open`/`edit` in the local shell.
+    private func open(_ path: String) {
+        let isDirectory = (try? local?.files.info(path).isDirectory) ?? false
+        fileToOpen = RemoteFile(name: (path as NSString).lastPathComponent, path: path, isDirectory: isDirectory, size: nil)
+    }
     var shown: String {
         if claude != nil { return claudeScreen ? paneOutput : claudeOutput }
         return pane != nil ? paneOutput : output
@@ -82,9 +92,10 @@ final class Terminal: ObservableObject {
 
     /// Starting folder for the file browser: the followed pane's or Claude session's, else the shell's.
     func currentDirectory() async -> String {
+        if let local { return local.directory }
         if let claude, !claude.cwd.isEmpty { return claude.cwd }
         if let pane, let path = try? await panes?.currentPath(pane.id), !path.isEmpty { return path }
-        return (try? await files?.shellDirectory()) ?? "/"
+        return (try? await ssh.map(RemoteFiles.init)?.shellDirectory()) ?? "/"
     }
 
     private func pollPane() {
@@ -188,19 +199,19 @@ final class Terminal: ObservableObject {
             renderClaude()
         }
         if pane != nil || claude != nil { return toPane { try await $0.sendLine($1, line) } }
-        tunnel?.send(Array((line + "\r").utf8))
+        channel?.send(Array((line + "\r").utf8))
     }
 
     func sendControl(_ letter: Character) {
         if pane != nil || claude != nil { return toPane { try await $0.sendKey($1, "C-\(letter.lowercased())") } }
         guard let ascii = letter.uppercased().first?.asciiValue else { return }
-        tunnel?.send([ascii & 0x1F])
+        channel?.send([ascii & 0x1F])
     }
 
     func resize(columns: Int, rows: Int) {
         guard columns > 0, rows > 0, (columns, rows) != size else { return }
         size = (columns, rows)
-        tunnel?.resize(columns: columns, rows: rows)
+        channel?.resize(columns: columns, rows: rows)
     }
 
     /// A tmux key name such as `Escape` or `BTab`, for a followed pane or Claude session.
@@ -212,10 +223,10 @@ final class Terminal: ObservableObject {
     func clear() { if pane == nil, claude == nil { output = "" } }
 
     func run() async throws {
-        guard let tunnel else { throw TransportError.closed }
+        guard let channel else { throw TransportError.closed }
         while true {
-            let bytes = try await tunnel.readAvailable()
-            guard tunnel === self.tunnel else { throw TransportError.closed }
+            let bytes = try await channel.readAvailable()
+            guard channel === self.channel else { throw TransportError.closed }
             pending += bytes
             let cut = Self.completeUTF8Prefix(pending)
             append(Self.stripEscapes(String(decoding: pending[..<cut], as: UTF8.self)))
@@ -235,6 +246,9 @@ final class Terminal: ObservableObject {
                 carriageReturn = true
             case "\u{8}":
                 if let last = out.last, last != "\n" { out.removeLast() }
+            case "\u{0C}":
+                out = ""
+                carriageReturn = false
             default:
                 if carriageReturn {
                     if let nl = out.lastIndex(of: "\n") { out.removeSubrange(out.index(after: nl)...) } else { out = "" }
@@ -350,10 +364,12 @@ struct TerminalView: View {
             }
             Button { browsing = true } label: { Image(systemName: "folder") }
                 .disabled(phase != .live).accessibilityLabel("Files")
-            Button { pickingPane = true } label: {
-                Image(systemName: terminal.claude != nil ? "sparkles" : terminal.pane == nil ? "rectangle.split.2x1" : "rectangle.split.2x1.fill")
+            if terminal.local == nil {
+                Button { pickingPane = true } label: {
+                    Image(systemName: terminal.claude != nil ? "sparkles" : terminal.pane == nil ? "rectangle.split.2x1" : "rectangle.split.2x1.fill")
+                }
+                .disabled(phase != .live).accessibilityLabel("Talk to")
             }
-            .disabled(phase != .live).accessibilityLabel("Talk to")
             Menu {
                 if terminal.claude != nil {
                     Toggle("Show Screen", systemImage: "rectangle.on.rectangle", isOn: $terminal.claudeScreen)
@@ -378,7 +394,7 @@ struct TerminalView: View {
                     Label("Wrap: \(wrap.label)", systemImage: "text.word.spacing")
                 }
                 .pickerStyle(.menu)
-                Button("Reconnect", systemImage: "arrow.clockwise", action: reconnect)
+                Button(terminal.local == nil ? "Reconnect" : "Restart Shell", systemImage: "arrow.clockwise", action: reconnect)
             } label: {
                 Image(systemName: "ellipsis.circle")
             }

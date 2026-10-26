@@ -8,6 +8,7 @@ struct SecureVNCApp: App {
         WindowGroup {
             HostsView()
                 .environmentObject(store)
+                .environmentObject(store.places)
         }
     }
 }

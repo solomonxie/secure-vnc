@@ -8,6 +8,7 @@ final class AppStore: ObservableObject {
     @Published private(set) var keys: [SSHKeyInfo] = []
 
     let keyStore = SSHKeyStore()
+    let places = LocalPlaces()
     private let secrets = KeychainStore()
     private let dir: URL
 
