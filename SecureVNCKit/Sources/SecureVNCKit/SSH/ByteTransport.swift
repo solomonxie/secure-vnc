@@ -13,6 +13,16 @@ public protocol ByteTransport: AnyObject {
     func close()
 }
 
+/// An interactive shell: typed bytes in, terminal output out.
+public protocol ShellChannel: AnyObject, Sendable {
+    func readAvailable() async throws -> [UInt8]
+    func send(_ bytes: [UInt8])
+    func resize(columns: Int, rows: Int)
+    func close()
+}
+
+extension SSHTunnel: ShellChannel {}
+
 /// Buffers chunks from an async stream so callers can read exact lengths.
 final class ChunkReader {
     private var iterator: AsyncThrowingStream<[UInt8], Error>.AsyncIterator

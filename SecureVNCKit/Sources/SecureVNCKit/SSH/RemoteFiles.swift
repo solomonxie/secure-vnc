@@ -30,10 +30,26 @@ public enum RemoteFileError: Error, LocalizedError {
     }
 }
 
+/// What the file browser works on: a server over SSH, or this device.
+public protocol FileSystem: Sendable {
+    func list(_ dir: String) async throws -> [RemoteFile]
+    func readText(_ path: String) async throws -> String
+    func writeText(_ path: String, _ text: String) async throws
+    func paste(_ sources: [String], into dir: String, move: Bool) async throws
+    func remove(_ paths: [String]) async throws
+    func rename(_ path: String, to name: String) async throws
+    func makeDirectory(_ path: String) async throws
+    /// The file on this device, without copying; nil when it lives elsewhere.
+    func localURL(_ path: String) -> URL?
+    /// A copy on this device, for previewing or sharing.
+    func download(_ path: String) async throws -> URL
+}
+
 /// File operations as POSIX `sh` one-liners over exec channels, so no SFTP server is needed.
-public struct RemoteFiles: Sendable {
+public struct RemoteFiles: FileSystem {
     let tunnel: SSHTunnel
     public static let maxTextSize = 1_000_000
+    public static let maxDownloadSize = 100_000_000
 
     public init(tunnel: SSHTunnel) { self.tunnel = tunnel }
 
@@ -85,6 +101,20 @@ public struct RemoteFiles: Sendable {
 
     public func writeText(_ path: String, _ text: String) async throws {
         try await run(#"cat > "$1""#, path, input: Array(text.utf8))
+    }
+
+    public func localURL(_ path: String) -> URL? { nil }
+
+    public func download(_ path: String) async throws -> URL {
+        let size = Int(try await run(#"wc -c < "$1" | tr -d ' '"#, path).trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
+        guard size <= Self.maxDownloadSize else { throw RemoteFileError.tooLarge(size) }
+        let result = try await tunnel.exec(Self.command(#"cat -- "$1""#, [path]))
+        guard result.status == 0 else { throw RemoteFileError.failed(result.errorText) }
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("downloads/\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let url = dir.appendingPathComponent((path as NSString).lastPathComponent)
+        try Data(result.output).write(to: url)
+        return url
     }
 
     /// Copies or moves into `dir`, adding " copy", " copy 2"… instead of overwriting.
