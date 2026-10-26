@@ -57,7 +57,7 @@ public struct RemoteFiles: Sendable {
 
     public func list(_ dir: String) async throws -> [RemoteFile] {
         let out = try await run(#"""
-        cd -- "$1" || exit 1
+        cd -- "$1" && ls -A . >/dev/null || exit 1
         for f in .[!.]* ..?* *; do
           [ -e "$f" ] || [ -L "$f" ] || continue
           if [ -d "$f" ]; then printf 'd\t\t%s\n' "$f"
