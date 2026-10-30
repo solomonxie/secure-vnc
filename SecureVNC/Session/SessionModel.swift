@@ -24,6 +24,7 @@ final class SessionModel: ObservableObject {
     /// Shown over the screen while the saved password is being typed into the lock screen.
     @Published private(set) var unlocking = false
     @Published var unlockNote: String?
+    let forwards = ForwardList()
 
     let host: Host
     private var store: AppStore?
@@ -39,6 +40,9 @@ final class SessionModel: ObservableObject {
     private var quietReconnectUntil: Date?
 
     init(host: Host) { self.host = host }
+
+    /// The SSH connection, for stats and tools; nil for this iPhone.
+    var sshTunnel: SSHTunnel? { tunnel ?? shell as? SSHTunnel }
 
     var installCommand: String { store?.key(host.keyID)?.installCommand ?? "" }
 
@@ -70,6 +74,7 @@ final class SessionModel: ObservableObject {
         shell = nil
         client = nil
         terminal?.detach()
+        forwards.closeAll()
         answerTrust(false)
         UIApplication.shared.isIdleTimerDisabled = false
     }

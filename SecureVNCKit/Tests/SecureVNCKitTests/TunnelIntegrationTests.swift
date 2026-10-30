@@ -137,6 +137,39 @@ final class TunnelIntegrationTests: XCTestCase {
         XCTAssertEqual(locked, local.terminationStatus == 0)
     }
 
+    func testRemoteSystemAndPortForward() async throws {
+        let store = SSHKeyStore(secrets: MemorySecretStore())
+        let info = try store.generate(name: "live", kind: .ed25519, requireUserPresence: false)
+        try startSSHD(authorizing: info.publicKey)
+        let shell = try await SSHTunnel.openShell(
+            SSHEndpoint(host: "127.0.0.1", port: 2222, username: NSUserName()), key: { try store.privateKey(for: info) },
+            verifyHostKey: { _ in })
+        defer { shell.close() }
+        let system = RemoteSystem(tunnel: shell)
+        let stats = try await system.stats()
+        XCTAssertTrue(stats.os.hasPrefix("macOS"))
+        XCTAssertNotNil(stats.cpuUsage)
+        let procs = try await system.processes()
+        XCTAssertTrue(procs.contains { $0.name == "sshd" || $0.name.hasPrefix("sshd") }, "\(procs.prefix(5))")
+        var awake = try await system.keepingAwake()
+        XCTAssertEqual(awake, false)
+        try await system.keepAwake(true)
+        awake = try await system.keepingAwake()
+        XCTAssertEqual(awake, true)
+        try await system.keepAwake(false)
+        awake = try await system.keepingAwake()
+        XCTAssertEqual(awake, false)
+        let port = try await system.tool(.port, target: "127.0.0.1", port: 2222)
+        XCTAssertTrue(port.contains("open"), port)
+
+        let forward = try await shell.forward(to: "localhost", port: 5900)
+        defer { forward.close() }
+        let banner = Probes.exchange(0x7F00_0001, port: UInt16(forward.localPort), timeout: 3, maxBytes: 12)
+        XCTAssertEqual(String(decoding: banner, as: UTF8.self).prefix(4), "RFB ")
+        let again = Probes.exchange(0x7F00_0001, port: UInt16(forward.localPort), timeout: 3, maxBytes: 12)
+        XCTAssertEqual(again.count, 12)
+    }
+
     func testTmuxPaneMirror() async throws {
         let store = SSHKeyStore(secrets: MemorySecretStore())
         let info = try store.generate(name: "live", kind: .ed25519, requireUserPresence: false)

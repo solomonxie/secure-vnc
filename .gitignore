@@ -6,3 +6,4 @@ DerivedData/
 .swiftpm/
 build/
 Config/Local.xcconfig
+SecureVNC/Info.plist

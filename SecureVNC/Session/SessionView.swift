@@ -10,6 +10,7 @@ struct SessionView: View {
     @State private var trackpad = true
     @State private var barVisible = true
     @State private var copied = false
+    @State private var showingSystem = false
 
     init(host: Host) { _model = StateObject(wrappedValue: SessionModel(host: host)) }
 
@@ -22,7 +23,7 @@ struct SessionView: View {
                 topBar
                 unlockBanner
             } else if let terminal = model.terminal {
-                TerminalView(terminal: terminal, title: model.host.name, phase: model.phase,
+                TerminalView(terminal: terminal, title: model.host.name, phase: model.phase, forwards: model.forwards,
                              reconnect: { model.connect(store: store) }, close: { dismiss() })
             } else {
                 statusView
@@ -35,6 +36,9 @@ struct SessionView: View {
         .onChange(of: scenePhase) { _, p in
             if p == .background { model.enterBackground() }
             if p == .active { model.enterForeground() }
+        }
+        .sheet(isPresented: $showingSystem) {
+            SystemView(title: model.host.name, tunnel: model.sshTunnel, forwards: model.forwards)
         }
         .alert(item: $model.trustPrompt) { prompt in
             Alert(title: Text("Trust \(model.host.name)?"),
@@ -90,6 +94,8 @@ struct SessionView: View {
                     Image(systemName: trackpad ? "rectangle.and.hand.point.up.left" : "hand.point.up.left")
                 }
                 .accessibilityLabel(trackpad ? "Trackpad mode" : "Touch mode")
+                Button { showingSystem = true } label: { Image(systemName: "gauge.with.dots.needle.33percent") }
+                    .accessibilityLabel("Stats and tools")
                 if model.canUnlock {
                     Button { model.unlock(); barVisible = true } label: { Image(systemName: "lock.open") }
                         .accessibilityLabel("Unlock with saved password")

@@ -41,10 +41,18 @@ SwiftNIO SSH, `direct-tcpip` channel straight to the VNC target; the RFB client 
 - Hosts: JSON in Application Support (no secrets).
 - Secrets (private keys, VNC/macOS passwords): Keychain, `…ThisDeviceOnly`, per host/key id.
 - Known host keys: in host record (public data).
-- Deps (SPM): `swift-nio-ssh` (Apple), `BigInt` (attaswift, ARD DH math). No network calls besides the user's own SSH server.
+- Deps (SPM): `swift-nio-ssh` (Apple), `BigInt` (attaswift, ARD DH math). No network calls besides the user's own SSH server, the local network when scanning, and ipinfo.io only on a tapped "Look Up Public IP".
 
 ## Risks / open questions
 - ARD DH uses a 4096-bit prime — modpow cost on-device; needs release build.
 - Command key mapping on Apple's server (Meta_L vs Super_L) — verify on device.
 - Full Retina framebuffer over Wi-Fi: ZRLE keeps it workable; Raw fallback is slow.
 - iOS kills sockets in background — reconnect on return, no background keep-alive.
+
+## Stats & network tools
+- **Stats**: one POSIX `sh` script per sample over an exec channel, macOS (`sysctl`, `vm_stat`, `top -l 2`, `netstat -ib`) or Linux (`/proc`); parsed in Swift; rates from two samples. This iPhone: Mach (`host_processor_info`, `host_statistics64`) + `getifaddrs` counters.
+- **Processes** (`ps`) with TERM/KILL; **keep awake** = `nohup caffeinate -ims` / `systemd-inhibit`, pid file in `/tmp`; can't stop a closed-lid Mac's clamshell sleep.
+- **Ports there**: `ssh -L` equivalent, a 127.0.0.1 listener per forward → new `direct-tcpip` channel per connection; opened in Safari view. Tradeoff: other apps on the phone can reach it while open.
+- **LAN scan**, all unprivileged (no multicast entitlement): datagram ICMP sweep + TCP connects (refused = alive) over the Wi-Fi subnet (capped at /22, own /24 first), Bonjour (`NWBrowser`, types listed in `NSBonjourServices`), NetBIOS node status, reverse DNS, SSH/HTTP banners.
+- iOS hides MACs (ARP table) → MAC + maker (bundled IEEE list, Wireshark `manuf`) only via a connected server on the same subnet (its `arp -an`/`ip neigh` after a ping sweep) or NetBIOS. Recent macOS may hide ARP too.
+- Device type: rule-based guess from model TXT records, services, ports, maker; shown with its reason.

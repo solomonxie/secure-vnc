@@ -17,6 +17,7 @@ let package = Package(
                 .product(name: "BigInt", package: "BigInt"),
             ],
             exclude: ["README.md"],
+            resources: [.copy("LAN/mac-vendors.tsv")],
             linkerSettings: [.linkedLibrary("z")]
         ),
         .testTarget(name: "SecureVNCKitTests", dependencies: ["SecureVNCKit"]),

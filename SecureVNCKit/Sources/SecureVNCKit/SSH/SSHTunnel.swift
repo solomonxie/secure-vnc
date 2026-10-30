@@ -54,11 +54,11 @@ public enum SSHTunnelStatus: Sendable {
 
 /// `ssh -N -L` without the local listener: one direct-tcpip channel exposed as a ByteTransport.
 public final class SSHTunnel: ByteTransport, @unchecked Sendable {
-    private let group: MultiThreadedEventLoopGroup
+    let group: MultiThreadedEventLoopGroup
     /// The TCP connection; closing it ends everything.
     private let link: Channel
     /// Where the client `NIOSSHHandler` lives: `link`, or a reverse session's channel inside it.
-    private let connection: Channel
+    let connection: Channel
     private let child: Channel
     private let reader: ChunkReader
 
@@ -327,6 +327,9 @@ public final class SSHTunnel: ByteTransport, @unchecked Sendable {
         }.get()
         return try await result.futureResult.get()
     }
+
+    /// The server's IP as this device sees it: whom it dialled, or who dialled in.
+    public var peerAddress: String? { link.remoteAddress?.ipAddress }
 
     public func close() {
         link.close(promise: nil)

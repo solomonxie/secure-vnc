@@ -49,7 +49,7 @@ final class Terminal: ObservableObject {
         mirrorTask?.cancel()
     }
 
-    private var ssh: SSHTunnel? { channel as? SSHTunnel }
+    var ssh: SSHTunnel? { channel as? SSHTunnel }
     /// This iPhone's built-in shell, rather than a server's.
     var local: LocalShell? { channel as? LocalShell }
     var files: (any FileSystem)? { local?.files ?? ssh.map(RemoteFiles.init) }
@@ -291,12 +291,14 @@ struct TerminalView: View {
     @ObservedObject var terminal: Terminal
     let title: String
     let phase: SessionModel.Phase
+    let forwards: ForwardList
     let reconnect: () -> Void
     let close: () -> Void
     @State private var command = ""
     @State private var recall: Int?
     @State private var browsing = false
     @State private var pickingPane = false
+    @State private var showingSystem = false
     @State private var openFile: RemoteFile?
     @AppStorage("terminal.wrap") private var wrap = ConsoleWrap.screen
     @AppStorage("terminal.fontSize") private var fontSize = 13.0
@@ -325,6 +327,7 @@ struct TerminalView: View {
             if let files = terminal.files { FileBrowserView(files: files, terminal: terminal) }
         }
         .sheet(isPresented: $pickingPane) { PanePicker(terminal: terminal) }
+        .sheet(isPresented: $showingSystem) { SystemView(title: title, tunnel: terminal.ssh, forwards: forwards) }
         .sheet(item: $openFile) { file in
             if let files = terminal.files { FileBrowserView(files: files, terminal: terminal, open: file) }
         }
@@ -364,6 +367,8 @@ struct TerminalView: View {
             }
             Button { browsing = true } label: { Image(systemName: "folder") }
                 .disabled(phase != .live).accessibilityLabel("Files")
+            Button { showingSystem = true } label: { Image(systemName: "gauge.with.dots.needle.33percent") }
+                .disabled(phase != .live).accessibilityLabel("Stats and tools")
             if terminal.local == nil {
                 Button { pickingPane = true } label: {
                     Image(systemName: terminal.claude != nil ? "sparkles" : terminal.pane == nil ? "rectangle.split.2x1" : "rectangle.split.2x1.fill")

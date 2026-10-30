@@ -5,12 +5,17 @@ struct HostsView: View {
     @State private var editing: Host?
     @State private var connecting: Host?
     @State private var pendingDelete: Host?
+    @State private var showingNetwork = false
+    @StateObject private var forwards = ForwardList()
 
     var body: some View {
         NavigationStack {
             List {
                 Section {
                     Button { connecting = .thisPhone } label: { row(.thisPhone) }
+                    Button { showingNetwork = true } label: {
+                        tile(symbol: "network", color: .teal, title: "Network & Stats", subtitle: "This iPhone · Wi-Fi scan · ping, DNS")
+                    }
                 }
                 Section("Hosts") {
                     if store.hosts.isEmpty {
@@ -39,6 +44,7 @@ struct HostsView: View {
                 }
             }
             .sheet(item: $editing) { HostEditorView(host: $0) }
+            .sheet(isPresented: $showingNetwork) { SystemView(title: "This iPhone", tunnel: nil, forwards: forwards) }
             .fullScreenCover(item: $connecting) { SessionView(host: $0) }
             .alert("Delete \(pendingDelete?.name ?? "")?", isPresented: .init(
                 get: { pendingDelete != nil }, set: { if !$0 { pendingDelete = nil } })
@@ -51,16 +57,22 @@ struct HostsView: View {
     }
 
     private func row(_ host: Host) -> some View {
+        tile(symbol: host.type.symbol,
+             color: host.type == .vnc ? Color.accentColor : host.type == .local ? Color.indigo : Color(white: 0.12),
+             foreground: host.type == .vnc || host.type == .local ? Color.white : Color.green,
+             title: host.name, subtitle: host.subtitle)
+    }
+
+    private func tile(symbol: String, color: Color, foreground: Color = .white, title: String, subtitle: String) -> some View {
         HStack(spacing: 12) {
-            Image(systemName: host.type.symbol)
+            Image(systemName: symbol)
                 .font(.title3.weight(.medium))
-                .foregroundStyle(host.type == .vnc || host.type == .local ? Color.white : Color.green)
+                .foregroundStyle(foreground)
                 .frame(width: 40, height: 40)
-                .background(host.type == .vnc ? Color.accentColor : host.type == .local ? Color.indigo : Color(white: 0.12),
-                            in: RoundedRectangle(cornerRadius: 9))
+                .background(color, in: RoundedRectangle(cornerRadius: 9))
             VStack(alignment: .leading, spacing: 2) {
-                Text(host.name).font(.headline).foregroundStyle(.primary)
-                Text(host.subtitle).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+                Text(title).font(.headline).foregroundStyle(.primary)
+                Text(subtitle).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
             }
             Spacer()
             Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(.tertiary)
